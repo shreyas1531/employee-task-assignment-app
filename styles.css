@@ -1,0 +1,665 @@
+:root {
+  --bg: #f6f7fb;
+  --card: #ffffff;
+  --text: #1f2937;
+  --muted: #6b7280;
+  --border: #e5e7eb;
+  --primary: #2563eb;
+  --primary-soft: #dbeafe;
+  --low: #16a34a;
+  --medium: #0284c7;
+  --high: #d97706;
+  --critical: #dc2626;
+  --completed: #4b5563;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: var(--text);
+  background: var(--bg);
+}
+
+.topbar {
+  padding: 1rem 1.25rem;
+  background: #0f172a;
+  color: #f8fafc;
+}
+
+.topbar-main {
+  max-width: 1200px;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.topbar h1 {
+  margin: 0;
+  font-size: 1.45rem;
+}
+
+.topbar p {
+  margin: 0.35rem 0 0;
+  font-size: 0.95rem;
+  color: #cbd5e1;
+}
+
+.container {
+  max-width: 1200px;
+  margin: 1.25rem auto 2rem;
+  padding: 0 1rem;
+}
+
+.hidden {
+  display: none !important;
+}
+
+.workspace-shell {
+  display: grid;
+  gap: 1rem;
+}
+
+.auth-card {
+  max-width: 460px;
+  margin: 2.5rem auto 0;
+}
+
+.auth-hint {
+  margin-top: 0.8rem;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1rem;
+}
+
+.role-card {
+  margin-bottom: 1rem;
+}
+
+.panel {
+  display: none;
+  gap: 1rem;
+}
+
+.panel.active {
+  display: grid;
+}
+
+.grid {
+  display: grid;
+  gap: 1rem;
+}
+
+.two-col {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.three-col {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+@media (max-width: 950px) {
+  .two-col,
+  .three-col {
+    grid-template-columns: 1fr;
+  }
+}
+
+h2,
+h3,
+h4 {
+  margin: 0 0 0.65rem;
+}
+
+label {
+  display: grid;
+  gap: 0.35rem;
+  font-weight: 600;
+  font-size: 0.92rem;
+}
+
+input,
+select,
+textarea,
+button {
+  font: inherit;
+}
+
+input,
+select,
+textarea {
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  padding: 0.5rem 0.6rem;
+  color: var(--text);
+}
+
+textarea {
+  resize: vertical;
+}
+
+button {
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 0.5rem 0.75rem;
+  background: var(--primary);
+  color: #ffffff;
+  cursor: pointer;
+}
+
+button.secondary {
+  background: #eef2ff;
+  color: #1e40af;
+  border-color: #c7d2fe;
+}
+
+button.warning {
+  background: #ffedd5;
+  color: #9a3412;
+  border-color: #fdba74;
+}
+
+button.muted {
+  background: #f3f4f6;
+  color: #111827;
+  border-color: #d1d5db;
+}
+
+button.active {
+  box-shadow: 0 0 0 2px #bfdbfe inset;
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.role-switch {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.session-info {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 10px;
+  padding: 0.35rem 0.45rem;
+}
+
+#sessionLabel {
+  font-size: 0.86rem;
+  color: #cbd5e1;
+}
+
+.stack {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.inline-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.9rem;
+  align-items: center;
+}
+
+.inline-options label {
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.label-title {
+  font-size: 0.92rem;
+  font-weight: 600;
+}
+
+.dropzone {
+  border: 2px dashed #93c5fd;
+  border-radius: 10px;
+  background: #f8fbff;
+  color: #1e3a8a;
+  padding: 0.8rem;
+  font-size: 0.9rem;
+}
+
+.dropzone.dragover {
+  border-color: #2563eb;
+  background: #eff6ff;
+}
+
+.dropzone-picker {
+  color: #1d4ed8;
+  font-weight: 700;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.summary-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.8rem;
+}
+
+.pill {
+  border-radius: 999px;
+  border: 1px solid transparent;
+  padding: 0.25rem 0.6rem;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.pill.low {
+  color: var(--low);
+  border-color: #86efac;
+  background: #f0fdf4;
+}
+
+.pill.medium {
+  color: var(--medium);
+  border-color: #7dd3fc;
+  background: #f0f9ff;
+}
+
+.pill.high {
+  color: var(--high);
+  border-color: #fdba74;
+  background: #fff7ed;
+}
+
+.pill.critical {
+  color: var(--critical);
+  border-color: #fca5a5;
+  background: #fef2f2;
+}
+
+.pill.completed {
+  color: var(--completed);
+  border-color: #cbd5e1;
+  background: #f8fafc;
+}
+
+.task-card,
+.employee-card,
+.note-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.7rem;
+  background: #ffffff;
+}
+
+.task-card.low {
+  border-left: 4px solid var(--low);
+}
+
+.task-card.medium {
+  border-left: 4px solid var(--medium);
+}
+
+.task-card.high {
+  border-left: 4px solid var(--high);
+}
+
+.task-card.critical {
+  border-left: 4px solid var(--critical);
+}
+
+.task-card.completed {
+  border-left: 4px solid var(--completed);
+  opacity: 0.85;
+}
+
+.task-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.6rem;
+  align-items: flex-start;
+}
+
+.task-title {
+  font-weight: 700;
+  margin: 0 0 0.2rem;
+}
+
+.meta {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.task-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-top: 0.55rem;
+}
+
+.attachments {
+  margin-top: 0.4rem;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.attachment-item {
+  border: 1px solid #dbe3ef;
+  border-radius: 8px;
+  padding: 0.35rem 0.5rem;
+  background: #f8fafc;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.attachment-item span {
+  font-size: 0.85rem;
+}
+
+.attachment-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.attachment-links a {
+  font-size: 0.82rem;
+  text-decoration: none;
+  color: #1d4ed8;
+  border: 1px solid #bfdbfe;
+  background: #eff6ff;
+  border-radius: 999px;
+  padding: 0.2rem 0.5rem;
+}
+
+.attachment-links a:hover {
+  text-decoration: underline;
+}
+
+.empty {
+  border: 1px dashed #cbd5e1;
+  border-radius: 10px;
+  background: #f8fafc;
+  color: #64748b;
+  padding: 0.65rem;
+  font-size: 0.9rem;
+}
+
+.calendar-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.65rem;
+}
+
+.calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 0.35rem;
+}
+
+.weekday-cell {
+  text-align: center;
+  font-size: 0.78rem;
+  color: #475569;
+  font-weight: 700;
+  padding-bottom: 0.2rem;
+}
+
+.day-cell {
+  min-height: 94px;
+  border: 1px solid #dbe3ef;
+  border-radius: 8px;
+  padding: 0.3rem;
+  background: #ffffff;
+  cursor: pointer;
+}
+
+.day-cell:hover {
+  border-color: #93c5fd;
+}
+
+.day-cell.outside {
+  background: #f8fafc;
+  color: #94a3b8;
+}
+
+.day-cell.today {
+  box-shadow: inset 0 0 0 2px #bfdbfe;
+}
+
+.day-cell.selected {
+  box-shadow: inset 0 0 0 2px #2563eb;
+}
+
+.day-number {
+  font-size: 0.78rem;
+  font-weight: 700;
+  margin-bottom: 0.2rem;
+}
+
+.calendar-chip {
+  display: block;
+  border-radius: 6px;
+  padding: 0.15rem 0.25rem;
+  font-size: 0.7rem;
+  margin-top: 0.18rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.calendar-chip.low {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.calendar-chip.medium {
+  background: #e0f2fe;
+  color: #0c4a6e;
+}
+
+.calendar-chip.high {
+  background: #ffedd5;
+  color: #9a3412;
+}
+
+.calendar-chip.critical {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.calendar-chip.completed {
+  background: #f1f5f9;
+  color: #475569;
+}
+
+.calendar-day-details {
+  margin-top: 0.75rem;
+  border-top: 1px solid var(--border);
+  padding-top: 0.65rem;
+}
+
+.analytics-card {
+  border: 1px solid #dbe3ef;
+  border-radius: 10px;
+  background: #f8fafc;
+  padding: 0.7rem;
+}
+
+.analytics-title {
+  font-weight: 700;
+  margin-bottom: 0.35rem;
+}
+
+.analytics-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.4rem;
+}
+
+@media (max-width: 720px) {
+  .analytics-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.metric-chip {
+  border-radius: 8px;
+  border: 1px solid #dbe3ef;
+  background: #ffffff;
+  padding: 0.35rem 0.45rem;
+  font-size: 0.82rem;
+}
+
+.note-card {
+  border-left: 4px solid #93c5fd;
+}
+
+.note-card.whatsapp {
+  border-left-color: #22c55e;
+}
+
+.note-card .meta {
+  margin-top: 0.25rem;
+}
+
+a.action-link {
+  color: #166534;
+  font-size: 0.86rem;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+a.action-link:hover {
+  text-decoration: underline;
+}
+
+.conversation-thread {
+  margin-top: 0.75rem;
+  max-height: 290px;
+  overflow: auto;
+  border: 1px solid #dbe3ef;
+  border-radius: 10px;
+  padding: 0.55rem;
+  background: #f8fafc;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.message-bubble {
+  border-radius: 10px;
+  border: 1px solid #dbe3ef;
+  padding: 0.5rem 0.6rem;
+  background: #ffffff;
+  max-width: 90%;
+}
+
+.message-bubble.manager {
+  justify-self: start;
+  border-left: 4px solid #2563eb;
+}
+
+.message-bubble.employee {
+  justify-self: end;
+  border-left: 4px solid #16a34a;
+}
+
+.message-role {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #334155;
+  margin-bottom: 0.2rem;
+}
+
+.message-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.88rem;
+}
+
+.vendor-card,
+.po-card,
+.alert-card {
+  border: 1px solid #dbe3ef;
+  border-radius: 10px;
+  background: #ffffff;
+  padding: 0.65rem;
+}
+
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.35rem;
+}
+
+.mini-chip {
+  border-radius: 999px;
+  font-size: 0.74rem;
+  font-weight: 700;
+  padding: 0.18rem 0.45rem;
+  border: 1px solid #dbe3ef;
+  background: #f8fafc;
+}
+
+.mini-chip.open {
+  color: #1d4ed8;
+  border-color: #93c5fd;
+  background: #eff6ff;
+}
+
+.mini-chip.received {
+  color: #166534;
+  border-color: #86efac;
+  background: #f0fdf4;
+}
+
+.mini-chip.delayed {
+  color: #9a3412;
+  border-color: #fdba74;
+  background: #fff7ed;
+}
+
+.mini-chip.cancelled {
+  color: #991b1b;
+  border-color: #fca5a5;
+  background: #fef2f2;
+}
+
+.mini-chip.low {
+  color: #166534;
+  border-color: #86efac;
+  background: #f0fdf4;
+}
+
+.mini-chip.medium {
+  color: #0c4a6e;
+  border-color: #7dd3fc;
+  background: #f0f9ff;
+}
+
+.mini-chip.high {
+  color: #9a3412;
+  border-color: #fdba74;
+  background: #fff7ed;
+}
+
+.mini-chip.critical {
+  color: #991b1b;
+  border-color: #fca5a5;
+  background: #fef2f2;
+}

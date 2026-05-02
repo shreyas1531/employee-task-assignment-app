@@ -17,7 +17,7 @@ cp .env.example .env
 - `PORT=<platform_port_if_injected>`
 - `FRONTEND_ROOT=<path_containing_index.html>`
 - `CORS_ORIGINS=<comma-separated-origins_or_empty_for_same-origin>`
-- `DATABASE_URL=<managed_postgres_url>` (preferred)
+- `DATABASE_URL=<managed_postgres_url>` (preferred runtime URL; include TLS like `sslmode=require`)
 - If not using `DATABASE_URL`, set `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`
 - `MANAGER_EMAIL`, `MANAGER_PASSWORD`, `MANAGER_NAME`, `MANAGER_PHONE`
 - Important: do not keep `PORT` as an empty value (`PORT=`). Use a numeric value (for example `PORT=4567`) or remove/unset it.
@@ -25,17 +25,25 @@ cp .env.example .env
 3) Install gems:
 bundle install --gemfile ./Gemfile
 
-4) Apply schema and ensure manager seed account exists:
-bundle exec ruby scripts/setup_db.rb
+4) (Recommended, one-time per environment) provision least-privilege DB roles:
+export DATABASE_ADMIN_URL="<postgres_admin_connection_url>"
+export APP_DB_NAME="task_assignment"
+export APP_RW_PASSWORD="<strong_password>"
+export APP_RO_PASSWORD="<strong_password>"
+export MIGRATION_ADMIN_PASSWORD="<strong_password>"
+bash scripts/setup_production_roles.sh
 
-5) Start the web process:
+5) Apply schema and ensure manager seed account exists (run with migration/admin DB credentials):
+DATABASE_URL="<postgres_migration_or_admin_connection_url>" bundle exec ruby scripts/setup_db.rb
+
+6) Start the web process (runtime DB credentials should be least-privilege role, e.g. `app_rw`):
 # If your environment file contains an empty PORT (PORT=), set a numeric value first:
 export PORT=${PORT:-4567}
 ./scripts/start_web.sh
 # alternative direct rackup:
 # bundle exec rackup ./config.ru -o 0.0.0.0 -p ${PORT:-4567}
 
-6) Basic runtime verification commands:
+7) Basic runtime verification commands:
 curl -sS -o /dev/null -w "%{http_code}\n" http://127.0.0.1:4567/api/health
 curl -sS -o /tmp/taskapp_root.html -w "%{http_code}\n" http://127.0.0.1:4567/
 grep -q "Employee Task Assignment" /tmp/taskapp_root.html && echo "root-content-ok"
@@ -72,3 +80,4 @@ Verification checklist (expected HTTP status in parentheses)
 Operational notes
 - Frontend uses same-origin API requests at `/api` by default.
 - Optional frontend API override remains available via `window.TASK_APP_API_BASE_URL` in `index.html`.
+- For phased enterprise rollout, monitoring, rollback, and access governance, follow `ROLLOUT_RUNBOOK.txt`.
