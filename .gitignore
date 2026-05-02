@@ -1,0 +1,16 @@
+.DS_Store
+*.log
+*.pid
+tmp/
+log/
+.env
+.env.*
+!.env.example
+.bundle/
+vendor/bundle/
+coverage/
+.idea/
+.vscode/
+backend/.env
+backend/.env.*
+!backend/.env.example

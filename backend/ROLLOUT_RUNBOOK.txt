@@ -1,0 +1,58 @@
+Employee Task Assignment - Organization Rollout Runbook
+
+Scope
+- This runbook defines production launch, phased rollout, rollback, and operational control steps.
+- Use with STARTUP.txt and scripts/setup_production_roles.sh.
+
+1) Pre-launch controls (must-pass)
+- Managed PostgreSQL is provisioned and network-restricted (private network, VPN, or approved IP allowlist).
+- Runtime uses least-privilege DB role (`app_rw`) and does not use admin credentials.
+- Database backups are enabled and restore tested for at least one recent snapshot.
+- Secrets are stored in platform secret manager (never committed to repo).
+- TLS is enforced for DB connection (`sslmode=require`) and HTTPS is enforced at ingress/load balancer.
+- Monitoring and alerting are configured for:
+  - process uptime and restart count
+  - API 5xx rate and p95 latency
+  - authentication failures and 429 spikes
+  - DB connection failures and storage thresholds
+
+2) Central database access model
+- migration_admin: schema changes and setup tasks only.
+- app_rw: runtime API read/write access.
+- app_ro: reporting/export read-only access.
+- Admin SQL access is restricted to DBA/SRE group and audited.
+- Application operators use app-level APIs for normal operations, not direct table writes.
+
+3) Release procedure
+- Deploy build to staging.
+- Run full verification checklist from STARTUP.txt.
+- Capture evidence:
+  - HTTP status codes for `/api/health`, `/`, and E2E endpoints
+  - generated `employee_id` and `task_id`
+  - final manager workspace task status (`Completed`)
+- Promote the same build artifact/config pattern to production.
+
+4) Phased organization rollout
+- Phase 1 (pilot): 1 team/site, 1-2 weeks, daily review of incidents and usability.
+- Phase 2 (expanded): 20-40% of org, monitor capacity and reminder/task completion metrics.
+- Phase 3 (full): remaining org after stability criteria pass for at least 5 business days.
+
+5) Stability and security acceptance criteria
+- API success rate >= 99.9% during business hours.
+- No unresolved P1/P2 incidents from current release.
+- No direct usage of admin DB credentials by application runtime.
+- No secret exposure in logs or repository.
+
+6) Rollback procedure
+- Keep previous known-good release artifact and config revision available.
+- If severe regression occurs:
+  1. route traffic back to prior release
+  2. verify `/api/health` and login flow
+  3. notify stakeholders with incident summary and ETA
+- If data issue occurs, execute restore plan from validated backup snapshot.
+
+7) Access governance
+- Review DB role assignments monthly.
+- Rotate DB passwords and manager seed credential according to policy.
+- Remove inactive accounts promptly.
+- Record production changes in an auditable change log.
