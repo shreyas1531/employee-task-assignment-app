@@ -26,9 +26,11 @@ cp .env.example .env
 bundle install --gemfile ./Gemfile
 
 4) Apply schema and ensure manager seed account exists:
-ruby scripts/setup_db.rb
+bundle exec ruby scripts/setup_db.rb
 
 5) Start the web process:
+# If your environment file contains an empty PORT (PORT=), set a numeric value first:
+export PORT=${PORT:-4567}
 ./scripts/start_web.sh
 # alternative direct rackup:
 # bundle exec rackup ./config.ru -o 0.0.0.0 -p ${PORT:-4567}
