@@ -41,6 +41,7 @@ curl -sS -o /tmp/taskapp_root.html -w "%{http_code}\n" http://127.0.0.1:4567/
 grep -q "Employee Task Assignment" /tmp/taskapp_root.html && echo "root-content-ok"
 
 Verification checklist (expected HTTP status in parentheses)
+- Capture and retain verification evidence (HTTP statuses and generated `employee_id`/`task_id`) with deployment records.
 1) Health check:
 - `GET /api/health` (200)
 
