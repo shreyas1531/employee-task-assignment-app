@@ -1,0 +1,21 @@
+{
+  "timestamp_utc": "2026-05-03T17:07:21Z",
+  "environment": "staging",
+  "base_url": "http://127.0.0.1:4567",
+  "database_host": "ep-flat-base-aop5t7ak.c-2.ap-southeast-1.aws.neon.tech",
+  "checks": {
+    "health_status": "200",
+    "root_status": "200",
+    "root_contains_title": true,
+    "manager_login_status": "200",
+    "create_employee_status": "200",
+    "employee_login_status": "200",
+    "assign_task_status": "200",
+    "send_reminder_status": "200",
+    "complete_task_status": "200",
+    "workspace_status": "200"
+  },
+  "employee_id": "05260dad-d74a-4969-a4f8-63cda6e0f478",
+  "task_id": "07a3c9ca-ea08-46d8-91f7-212e1f72b34f",
+  "workspace_task_status": "Completed"
+}

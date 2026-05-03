@@ -56,3 +56,21 @@ Scope
 - Rotate DB passwords and manager seed credential according to policy.
 - Remove inactive accounts promptly.
 - Record production changes in an auditable change log.
+
+8) Secret manager and promotion automation (required path)
+- Store rollout secrets from local bundle file to Keychain:
+  - `bash scripts/store_secrets_in_keychain.sh "${HOME}/.taskapp_prod_env"`
+- Supported secret key patterns:
+  - preferred: `STAGING_BASE_URL` / `PRODUCTION_BASE_URL`, `STAGING_DATABASE_URL` / `PRODUCTION_DATABASE_URL`
+  - compatible fallback: `BASE_URL` or `APP_BASE_URL`, `RUNTIME_DATABASE_URL`, `MIGRATION_DATABASE_URL`
+- Run gated staging promotion:
+  - `bash scripts/promote_with_checks.sh staging`
+  - optional override: `bash scripts/promote_with_checks.sh staging https://staging.example.com`
+- Promote production only after staging evidence review:
+  - `bash scripts/promote_with_checks.sh production`
+  - optional override: `bash scripts/promote_with_checks.sh production https://app.example.com`
+- Scripts automatically:
+  - load secrets from Keychain service `taskapp-production`
+  - apply schema/seed using environment-specific migration URL
+  - execute full E2E verification and save evidence JSON
+  - fail if DB URL host resolves to localhost (`localhost`, `127.0.0.1`, `0.0.0.0`)

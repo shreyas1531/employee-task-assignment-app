@@ -6,26 +6,23 @@ Prerequisites (production host or container image)
 3) PostgreSQL client build tools available for the `pg` gem (`libpq` + `pg_config` on PATH).
 4) Frontend static files available at `FRONTEND_ROOT` (default is repo parent directory `..`).
 
-Production setup
-1) Create and edit environment config:
-cp .env.example .env
-
-2) Set required production variables in `.env` (or platform secrets):
-- `RACK_ENV=production`
-- `APP_HOST=0.0.0.0`
-- `APP_PORT=4567` (or leave and rely on `PORT`)
-- `PORT=<platform_port_if_injected>`
-- `FRONTEND_ROOT=<path_containing_index.html>`
-- `CORS_ORIGINS=<comma-separated-origins_or_empty_for_same-origin>`
-- `DATABASE_URL=<managed_postgres_url>` (preferred runtime URL; include TLS like `sslmode=require`)
-- If not using `DATABASE_URL`, set `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`
+Production secret bootstrap (macOS Keychain)
+1) Create local secret bundle file outside the repository (example: `~/.taskapp_prod_env`) with managed-central values:
+- `STAGING_BASE_URL` and `PRODUCTION_BASE_URL` (public app/API base URLs)
+- `STAGING_DATABASE_URL` and `PRODUCTION_DATABASE_URL` (runtime `app_rw` URLs)
+- `STAGING_MIGRATION_DATABASE_URL` and `PRODUCTION_MIGRATION_DATABASE_URL` (migration/seed URLs; optional if same as runtime URL)
+- Backward-compatible fallbacks are also supported: `BASE_URL` or `APP_BASE_URL`, `RUNTIME_DATABASE_URL`, `MIGRATION_DATABASE_URL`
+- `DATABASE_ADMIN_URL`, `APP_DB_NAME`, `APP_RW_PASSWORD`, `APP_RO_PASSWORD`, `MIGRATION_ADMIN_PASSWORD` (for role provisioning)
 - `MANAGER_EMAIL`, `MANAGER_PASSWORD`, `MANAGER_NAME`, `MANAGER_PHONE`
-- Important: do not keep `PORT` as an empty value (`PORT=`). Use a numeric value (for example `PORT=4567`) or remove/unset it.
+- Optional runtime app settings if needed: `RACK_ENV`, `APP_HOST`, `APP_PORT`, `PORT`, `FRONTEND_ROOT`, `CORS_ORIGINS`
+
+2) Store secret bundle into Keychain service `taskapp-production`:
+bash scripts/store_secrets_in_keychain.sh "${HOME}/.taskapp_prod_env"
 
 3) Install gems:
 bundle install --gemfile ./Gemfile
 
-4) (Recommended, one-time per environment) provision least-privilege DB roles:
+4) (Recommended, one-time per managed DB) provision least-privilege roles:
 export DATABASE_ADMIN_URL="<postgres_admin_connection_url>"
 export APP_DB_NAME="task_assignment"
 export APP_RW_PASSWORD="<strong_password>"
@@ -33,20 +30,44 @@ export APP_RO_PASSWORD="<strong_password>"
 export MIGRATION_ADMIN_PASSWORD="<strong_password>"
 bash scripts/setup_production_roles.sh
 
-5) Apply schema and ensure manager seed account exists (run with migration/admin DB credentials):
-DATABASE_URL="<postgres_migration_or_admin_connection_url>" bundle exec ruby scripts/setup_db.rb
+5) Promote staging with schema/seed + full E2E + evidence capture:
+bash scripts/promote_with_checks.sh staging
+# Optional base URL override if not stored in Keychain:
+# bash scripts/promote_with_checks.sh staging https://staging.example.com
 
-6) Start the web process (runtime DB credentials should be least-privilege role, e.g. `app_rw`):
-# If your environment file contains an empty PORT (PORT=), set a numeric value first:
+6) After staging approval, promote production with the same checks:
+bash scripts/promote_with_checks.sh production
+# Optional base URL override if not stored in Keychain:
+# bash scripts/promote_with_checks.sh production https://app.example.com
+
+7) Evidence output is written to `backend/verification_evidence/`:
+- `<env>_verification_<timestamp>.json` from `run_rollout_verification.sh`
+- `<env>_promotion_<timestamp>.json` from `promote_with_checks.sh`
+
+8) Manual web process start (if needed outside scripted rollout):
+# Runtime DB credentials should be least-privilege role (`app_rw`) and managed URL with TLS.
 export PORT=${PORT:-4567}
 ./scripts/start_web.sh
-# alternative direct rackup:
-# bundle exec rackup ./config.ru -o 0.0.0.0 -p ${PORT:-4567}
 
-7) Basic runtime verification commands:
-curl -sS -o /dev/null -w "%{http_code}\n" http://127.0.0.1:4567/api/health
-curl -sS -o /tmp/taskapp_root.html -w "%{http_code}\n" http://127.0.0.1:4567/
-grep -q "Employee Task Assignment" /tmp/taskapp_root.html && echo "root-content-ok"
+Validated Neon-backed execution sequence (local app + managed DB)
+1) Ensure Neon URLs are in `~/.taskapp_prod_env`:
+- `DATABASE_ADMIN_URL`, `RUNTIME_DATABASE_URL`, `MIGRATION_DATABASE_URL` should point to `*.neon.tech` with `sslmode=require`.
+
+2) Reload Keychain from env bundle:
+bash scripts/store_secrets_in_keychain.sh "${HOME}/.taskapp_prod_env"
+
+3) Confirm runtime host is managed (non-local):
+bash scripts/load_secrets_from_keychain.sh -- ruby -ruri -e 'u=ENV["RUNTIME_DATABASE_URL"]||ENV["DATABASE_URL"]||""; puts URI(u).host'
+
+4) Apply schema + seed manager with migration URL:
+bash scripts/load_secrets_from_keychain.sh -- bash -lc 'DATABASE_URL="$MIGRATION_DATABASE_URL" bundle exec ruby scripts/setup_db.rb'
+
+5) Start backend on local port with Neon runtime DB:
+lsof -ti tcp:4567 | xargs kill 2>/dev/null || true
+bash scripts/load_secrets_from_keychain.sh -- bash -lc 'nohup env DATABASE_URL="$RUNTIME_DATABASE_URL" APP_HOST=127.0.0.1 APP_PORT=4567 PORT=4567 FRONTEND_ROOT=/Users/deepakjain/employee-task-assignment-app RACK_ENV=production scripts/start_web.sh >/tmp/taskapp_backend_neon.log 2>&1 &'
+
+6) Run full E2E verifier and capture evidence:
+bash scripts/run_rollout_verification.sh staging http://127.0.0.1:4567
 
 Verification checklist (expected HTTP status in parentheses)
 - Capture and retain verification evidence (HTTP statuses and generated `employee_id`/`task_id`) with deployment records.
@@ -78,6 +99,8 @@ Verification checklist (expected HTTP status in parentheses)
 - `GET /api/workspace` with manager token (200), task with `id=task_id` has `status=Completed`
 
 Operational notes
+- `scripts/promote_with_checks.sh` and `scripts/run_rollout_verification.sh` reject localhost DB URLs to enforce managed central database usage.
+- All rollout commands auto-load secrets from Keychain via `scripts/load_secrets_from_keychain.sh`.
 - Frontend uses same-origin API requests at `/api` by default.
 - Optional frontend API override remains available via `window.TASK_APP_API_BASE_URL` in `index.html`.
 - For phased enterprise rollout, monitoring, rollback, and access governance, follow `ROLLOUT_RUNBOOK.txt`.
