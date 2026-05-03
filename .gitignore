@@ -14,3 +14,4 @@ coverage/
 backend/.env
 backend/.env.*
 !backend/.env.example
+backend/verification_evidence/
