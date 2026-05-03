@@ -40,11 +40,26 @@ bash scripts/promote_with_checks.sh production
 # Optional base URL override if not stored in Keychain:
 # bash scripts/promote_with_checks.sh production https://app.example.com
 
-7) Evidence output is written to `backend/verification_evidence/`:
+7) Launch finalization step 1 - set non-local HTTPS base URLs:
+# Example (replace with your real DNS names):
+export STAGING_BASE_URL="https://staging.example.com"
+export PRODUCTION_BASE_URL="https://app.example.com"
+bash scripts/store_secrets_in_keychain.sh "${HOME}/.taskapp_prod_env"
+
+8) Launch finalization step 2 - run backend on host/container behind HTTPS:
+# Provide real certificate/key in production (recommended):
+export HTTPS_CERT_FILE="/path/to/fullchain.pem"
+export HTTPS_KEY_FILE="/path/to/privkey.pem"
+APP_HOST=0.0.0.0 APP_PORT=8443 RACK_ENV=production \
+DATABASE_URL="<managed_runtime_database_url>" \
+bash scripts/start_web_https.sh
+# Local smoke path (self-signed cert auto-generated):
+# APP_HOST=0.0.0.0 APP_PORT=8443 RACK_ENV=production DATABASE_URL="<managed_runtime_database_url>" bash scripts/start_web_https.sh
+9) Evidence output is written to `backend/verification_evidence/`:
 - `<env>_verification_<timestamp>.json` from `run_rollout_verification.sh`
 - `<env>_promotion_<timestamp>.json` from `promote_with_checks.sh`
 
-8) Manual web process start (if needed outside scripted rollout):
+10) Manual web process start (HTTP, if needed outside scripted rollout):
 # Runtime DB credentials should be least-privilege role (`app_rw`) and managed URL with TLS.
 export PORT=${PORT:-4567}
 ./scripts/start_web.sh
@@ -64,7 +79,7 @@ bash scripts/load_secrets_from_keychain.sh -- bash -lc 'DATABASE_URL="$MIGRATION
 
 5) Start backend on local port with Neon runtime DB:
 lsof -ti tcp:4567 | xargs kill 2>/dev/null || true
-bash scripts/load_secrets_from_keychain.sh -- bash -lc 'nohup env DATABASE_URL="$RUNTIME_DATABASE_URL" APP_HOST=127.0.0.1 APP_PORT=4567 PORT=4567 FRONTEND_ROOT=/Users/deepakjain/employee-task-assignment-app RACK_ENV=production scripts/start_web.sh >/tmp/taskapp_backend_neon.log 2>&1 &'
+bash scripts/load_secrets_from_keychain.sh -- bash -lc 'nohup env DATABASE_URL="$RUNTIME_DATABASE_URL" APP_HOST=127.0.0.1 APP_PORT=4567 PORT=4567 FRONTEND_ROOT=.. RACK_ENV=production scripts/start_web.sh >/tmp/taskapp_backend_neon.log 2>&1 &'
 
 6) Run full E2E verifier and capture evidence:
 bash scripts/run_rollout_verification.sh staging http://127.0.0.1:4567
