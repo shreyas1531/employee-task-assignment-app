@@ -11,7 +11,7 @@ EXPLICIT_HTTPS_CERT_FILE="${HTTPS_CERT_FILE-}"
 EXPLICIT_HTTPS_KEY_FILE="${HTTPS_KEY_FILE-}"
 EXPLICIT_TLS_CN="${TLS_CN-}"
 
-if [[ -f "${BACKEND_DIR}/.env" ]]; then
+if [[ "${LOAD_DOTENV_FILE:-1}" == "1" && "${RACK_ENV:-development}" != "production" && -f "${BACKEND_DIR}/.env" ]]; then
   set -a
   source "${BACKEND_DIR}/.env"
   set +a
@@ -31,7 +31,7 @@ if ! command -v openssl >/dev/null 2>&1; then
 fi
 
 export APP_HOST="${APP_HOST:-0.0.0.0}"
-export APP_PORT="${APP_PORT:-${PORT:-8443}}"
+export APP_PORT="${PORT:-${APP_PORT:-8443}}"
 export FRONTEND_ROOT="${FRONTEND_ROOT:-${BACKEND_DIR}/..}"
 export BUNDLE_GEMFILE="${BACKEND_DIR}/Gemfile"
 

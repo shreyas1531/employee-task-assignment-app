@@ -17,6 +17,7 @@ COPY . /app
 RUN chmod +x /app/backend/scripts/start_web.sh
 
 ENV RACK_ENV=production \
+    LOAD_DOTENV_FILE=0 \
     APP_HOST=0.0.0.0 \
     APP_PORT=8080 \
     PORT=8080 \

@@ -1,0 +1,15 @@
+.git
+.gitignore
+.DS_Store
+**/.DS_Store
+
+.env
+.env.*
+backend/.env
+backend/.env.*
+!backend/.env.example
+
+backend/tmp/
+backend/verification_evidence/
+log/
+tmp/
