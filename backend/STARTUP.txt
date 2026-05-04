@@ -24,11 +24,12 @@ bundle install --gemfile ./Gemfile
 
 4) (Recommended, one-time per managed DB) provision least-privilege roles:
 export DATABASE_ADMIN_URL="<postgres_admin_connection_url>"
-export APP_DB_NAME="task_assignment"
+export APP_DB_NAME="neondb"
 export APP_RW_PASSWORD="<strong_password>"
 export APP_RO_PASSWORD="<strong_password>"
 export MIGRATION_ADMIN_PASSWORD="<strong_password>"
 bash scripts/setup_production_roles.sh
+# If psql is unavailable, the script automatically falls back to Ruby/pg provisioning.
 
 5) Promote staging with schema/seed + full E2E + evidence capture:
 bash scripts/promote_with_checks.sh staging
