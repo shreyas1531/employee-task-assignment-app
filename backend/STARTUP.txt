@@ -15,6 +15,7 @@ Production secret bootstrap (macOS Keychain)
 - `DATABASE_ADMIN_URL`, `APP_DB_NAME`, `APP_RW_PASSWORD`, `APP_RO_PASSWORD`, `MIGRATION_ADMIN_PASSWORD` (for role provisioning)
 - `MANAGER_EMAIL`, `MANAGER_PASSWORD`, `MANAGER_NAME`, `MANAGER_PHONE`
 - Optional runtime app settings if needed: `RACK_ENV`, `APP_HOST`, `APP_PORT`, `PORT`, `FRONTEND_ROOT`, `CORS_ORIGINS`
+- For Cloud Run frontend/backend cross-origin calls, set `CORS_ORIGINS` to your deployed frontend URL (example: `https://employee-task-assignment-app-885400484338.asia-south2.run.app`).
 
 2) Store secret bundle into Keychain service `taskapp-production`:
 bash scripts/store_secrets_in_keychain.sh "${HOME}/.taskapp_prod_env"

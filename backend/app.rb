@@ -69,6 +69,12 @@ class TaskAssignmentAPI < Sinatra::Base
       configured = ENV["CORS_ORIGINS"].to_s.strip
       origins = if configured.empty?
         [
+          "https://employee-task-assignment-app-885400484338.asia-south2.run.app",
+          ENV["STAGING_BASE_URL"],
+          ENV["PRODUCTION_BASE_URL"],
+          ENV["APP_BASE_URL"],
+          ENV["BASE_URL"],
+          current_request_origin,
           "null",
           "http://localhost:3000",
           "http://127.0.0.1:3000",
@@ -78,7 +84,17 @@ class TaskAssignmentAPI < Sinatra::Base
       else
         configured.split(",")
       end
-      origins.map { |origin| origin.to_s.strip }.reject(&:empty?)
+      origins.map { |origin| origin.to_s.strip }.reject(&:empty?).uniq
+    end
+
+    def current_request_origin
+      scheme = request.scheme.to_s.strip
+      host = request.host.to_s.strip
+      port = request.port
+      return nil if scheme.empty? || host.empty?
+
+      default_port = (scheme == "https" && port == 443) || (scheme == "http" && port == 80)
+      default_port ? "#{scheme}://#{host}" : "#{scheme}://#{host}:#{port}"
     end
 
     def origin_allowed?(origin)
@@ -98,16 +114,29 @@ class TaskAssignmentAPI < Sinatra::Base
     def set_cors_headers!
       origin = request.env["HTTP_ORIGIN"].to_s.strip
       allowed = cors_allowed_origins
+      requested_headers = request.env["HTTP_ACCESS_CONTROL_REQUEST_HEADERS"].to_s.strip
+      selected_origin = nil
 
       if allowed.include?("*")
-        response.headers["Access-Control-Allow-Origin"] = "*"
+        selected_origin = "*"
       elsif !origin.empty? && origin_allowed?(origin)
-        response.headers["Access-Control-Allow-Origin"] = origin
-        response.headers["Vary"] = "Origin"
+        selected_origin = origin
       end
 
-      response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
-      response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+      unless selected_origin.nil?
+        response.headers["Access-Control-Allow-Origin"] = selected_origin
+        response.headers["Vary"] = "Origin"
+      end
+      if !selected_origin.nil? && selected_origin != "*"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+      end
+
+      response.headers["Access-Control-Allow-Headers"] = if requested_headers.empty?
+        "Content-Type, Authorization"
+      else
+        requested_headers
+      end
+      response.headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,DELETE,OPTIONS"
       response.headers["Access-Control-Max-Age"] = "86400"
     end
 
