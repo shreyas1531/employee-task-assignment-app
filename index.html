@@ -7,359 +7,193 @@
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <header class="topbar">
-    <div class="topbar-main">
-      <div>
+  <div id="toastContainer" class="toast-container"></div>
+  <main class="app-shell">
+    <section id="loginPanel" class="login-wrap">
+      <article class="card auth-card">
         <h1>Employee Task Assignment</h1>
-        <p>Assign tasks, notify staff, track urgency, vendor PO activity, and reminders.</p>
-      </div>
-      <div id="sessionInfo" class="session-info hidden">
-        <span id="sessionLabel"></span>
-        <button id="logoutBtn" type="button" class="secondary">Log Out</button>
-      </div>
-    </div>
-  </header>
-
-  <main class="container">
-    <section id="loginPanel" class="card auth-card">
-      <h2>Sign In</h2>
-      <form id="loginForm" class="stack">
-        <label>
-          Email
-          <input id="loginEmail" type="email" required placeholder="name@company.com" />
-        </label>
-        <label>
-          Password
-          <input id="loginPassword" type="password" required placeholder="Your password" />
-        </label>
-        <button type="submit">Login</button>
-      </form>
-      <div class="meta auth-hint">
-        Manager default login: <strong>manager@taskapp.local</strong> / <strong>manager123</strong>
-      </div>
+        <p class="muted">Sign in to access tasks, vendors, and sales modules.</p>
+        <form id="loginForm" class="form-grid">
+          <label>Email<input id="loginEmail" type="email" required placeholder="name@company.com"></label>
+          <label>Password<input id="loginPassword" type="password" required placeholder="••••••••"></label>
+          <button type="submit">Login</button>
+        </form>
+      </article>
     </section>
 
-    <section id="workspaceShell" class="workspace-shell hidden">
-      <section class="card role-card">
-        <h2>Workspace</h2>
-        <div class="role-switch">
-          <button id="managerViewBtn" class="active" type="button">Manager View</button>
-          <button id="employeeViewBtn" type="button">Employee View</button>
-          <button id="vendorViewBtn" type="button">Vendor Assessment</button>
+    <section id="workspaceShell" class="workspace hidden">
+      <aside class="sidebar">
+        <div class="brand">
+          <h2>TaskApp</h2>
+          <p id="sessionLabel" class="muted"></p>
         </div>
-      </section>
+        <nav id="navList" class="nav-list">
+          <button data-page="tasks" class="active">Tasks</button>
+          <button data-page="vendors">Vendor Database</button>
+          <button data-page="sales">Sales & Orders</button>
+          <button data-page="admin" id="adminNavBtn">Admin</button>
+        </nav>
+        <button id="logoutBtn" class="danger">Logout</button>
+      </aside>
 
-      <section id="managerPanel" class="panel active">
-        <div class="grid two-col">
+      <section class="content">
+        <header class="topbar">
+          <h1 id="pageTitle">Tasks</h1>
+        </header>
+
+        <section id="tasksPage" class="page active">
+          <div class="grid two">
+            <article class="card">
+              <h3>Create Employee</h3>
+              <form id="employeeForm" class="form-grid">
+                <label>Name<input id="employeeName" type="text" placeholder="Employee name"></label>
+                <label>Email<input id="employeeEmail" type="email" placeholder="employee@company.com"></label>
+                <label>Password<input id="employeePassword" type="text" placeholder="Minimum 8 characters"></label>
+                <label>Phone<input id="employeePhone" type="text" placeholder="9199..."></label>
+                <button type="submit">Create Employee</button>
+              </form>
+            </article>
+
+            <article class="card">
+              <h3>Assign Task</h3>
+              <form id="taskForm" class="form-grid">
+                <label>Title<input id="taskTitle" type="text" required></label>
+                <label>Assign To<select id="taskAssignee"></select></label>
+                <label>Description<textarea id="taskDescription" rows="2"></textarea></label>
+                <label>Due Date<input id="taskDueAt" type="datetime-local" required></label>
+                <label>Urgency
+                  <select id="taskUrgency">
+                    <option>Low</option><option selected>Medium</option><option>High</option><option>Critical</option>
+                  </select>
+                </label>
+                <label>Reminder (minutes)<input id="taskReminderMinutes" type="number" min="1" value="60"></label>
+                <label class="checkbox"><input id="taskPersistentReminders" type="checkbox" checked> Persistent reminders</label>
+                <button type="submit">Create Task</button>
+              </form>
+            </article>
+          </div>
+
           <article class="card">
-            <h3>Add Employee</h3>
-            <form id="employeeForm" class="stack">
-              <label>
-                Employee Name
-                <input id="employeeName" type="text" required placeholder="e.g. Priya Sharma" />
-              </label>
-              <label>
-                Employee Email (Login)
-                <input id="employeeEmail" type="email" required placeholder="priya@company.com" />
-              </label>
-              <label>
-                Employee Password (Login)
-                <input id="employeePassword" type="password" required placeholder="Set a password" />
-              </label>
-              <label>
-                WhatsApp Number (with country code)
-                <input id="employeePhone" type="text" required placeholder="e.g. 919876543210" />
-              </label>
-              <button type="submit">Save Employee</button>
-            </form>
-          </article>
-
-          <article class="card">
-            <h3>Employees</h3>
-            <div id="employeeList" class="stack"></div>
-          </article>
-        </div>
-
-        <article class="card">
-          <h3>Assign Task</h3>
-          <form id="taskForm" class="stack">
-            <div class="grid two-col">
-              <label>
-                Task Title
-                <input id="taskTitle" type="text" required placeholder="e.g. Prepare weekly sales report" />
-              </label>
-              <label>
-                Assign To
-                <select id="taskAssignee" required></select>
-              </label>
+            <div class="toolbar">
+              <h3>Tasks</h3>
+              <input id="taskSearch" type="search" placeholder="Search tasks">
             </div>
-            <label>
-              Task Description
-              <textarea id="taskDescription" rows="3" placeholder="Task details, acceptance criteria, dependencies"></textarea>
-            </label>
-            <div class="grid three-col">
-              <label>
-                Due Date & Time
-                <input id="taskDueAt" type="datetime-local" required />
-              </label>
-              <label>
-                Urgency
-                <select id="taskUrgency" required>
-                  <option value="Low">Low</option>
-                  <option value="Medium" selected>Medium</option>
-                  <option value="High">High</option>
-                  <option value="Critical">Critical</option>
-                </select>
-              </label>
-              <label>
-                Reminder Every (minutes)
-                <input id="taskReminderMinutes" type="number" min="1" value="60" required />
-              </label>
+            <div id="taskList" class="table-wrap"></div>
+          </article>
+        </section>
+
+        <section id="vendorsPage" class="page">
+          <div class="grid two">
+            <article class="card">
+              <h3>Add Vendor</h3>
+              <form id="vendorForm" class="form-grid">
+                <label>Name<input id="vendorName" type="text" required></label>
+                <label>Contact Email<input id="vendorContactEmail" type="email"></label>
+                <label>Contact Phone<input id="vendorContactPhone" type="text"></label>
+                <label>City<input id="vendorCity" type="text"></label>
+                <label>Status
+                  <select id="vendorStatus"><option>Active</option><option>Inactive</option></select>
+                </label>
+                <label>Goods<textarea id="vendorGoods" rows="2" placeholder="Comma separated"></textarea></label>
+                <label>Default Cost<input id="vendorDefaultCostPrice" type="number" min="0" step="0.01" value="0"></label>
+                <button type="submit">Save Vendor</button>
+              </form>
+            </article>
+
+            <article class="card">
+              <h3>Add Product</h3>
+              <form id="productForm" class="form-grid">
+                <label>Vendor<select id="productVendorId"></select></label>
+                <label>Name<input id="productName" type="text" required></label>
+                <label>Item Code<input id="productItemCode" type="text" required></label>
+                <label>Quantity<input id="productQuantity" type="number" min="0" value="0"></label>
+                <label>Category<input id="productCategory" type="text"></label>
+                <label>Stock Status
+                  <select id="productStockStatus"><option>In Stock</option><option>Low Stock</option><option>Out of Stock</option></select>
+                </label>
+                <button type="submit">Save Product</button>
+              </form>
+            </article>
+          </div>
+          <div class="grid two">
+            <article class="card">
+              <div class="toolbar">
+                <h3>Vendors</h3>
+                <input id="vendorSearch" type="search" placeholder="Search vendors">
+              </div>
+              <div id="vendorCards" class="cards"></div>
+            </article>
+            <article class="card">
+              <div class="toolbar">
+                <h3>Products</h3>
+                <input id="productSearch" type="search" placeholder="Search products">
+              </div>
+              <div id="productTable" class="table-wrap"></div>
+            </article>
+          </div>
+        </section>
+
+        <section id="salesPage" class="page">
+          <div class="grid two">
+            <article class="card">
+              <h3>Add Client</h3>
+              <form id="clientForm" class="form-grid">
+                <label>Name<input id="clientName" type="text" required></label>
+                <label>Email<input id="clientEmail" type="email"></label>
+                <label>Phone<input id="clientPhone" type="text"></label>
+                <label>City<input id="clientCity" type="text"></label>
+                <label>Status<select id="clientStatus"><option>Active</option><option>Inactive</option></select></label>
+                <button type="submit">Save Client</button>
+              </form>
+            </article>
+            <article class="card">
+              <h3>Create Order</h3>
+              <form id="orderForm" class="form-grid">
+                <label>Order ID<input id="orderId" type="text" required></label>
+                <label>Client<select id="orderClientId"></select></label>
+                <label>Product<select id="orderProductId"></select></label>
+                <label>Assigned Employee<select id="orderEmployeeId"></select></label>
+                <label>Quantity<input id="orderQuantity" type="number" min="1" value="1"></label>
+                <label>Due Date<input id="orderDueDate" type="datetime-local" required></label>
+                <label>Status
+                  <select id="orderStatus">
+                    <option>Pending</option><option>Processing</option><option>Delivered</option><option>Cancelled</option>
+                  </select>
+                </label>
+                <button type="submit">Save Order</button>
+              </form>
+            </article>
+          </div>
+          <article class="card">
+            <div class="toolbar">
+              <h3>Orders</h3>
+              <input id="orderSearch" type="search" placeholder="Search by order/client/item">
             </div>
-            <div class="stack">
-              <span class="label-title">Task Attachments (Dropbox)</span>
-              <div id="attachmentDropzone" class="dropzone" tabindex="0">
-                Drag and drop files here, or
-                <label for="taskAttachmentInput" class="dropzone-picker">browse files</label>
-              </div>
-              <input id="taskAttachmentInput" type="file" multiple hidden />
-              <div class="meta">Max 5 files, 1 MB per file, 4 MB total for each task.</div>
-              <div id="draftAttachmentList" class="stack"></div>
-            </div>
-            <div class="inline-options">
-              <label>
-                <input id="taskPersistentReminders" type="checkbox" checked />
-                Keep reminders persistent until completed
-              </label>
-              <label>
-                <input id="autoOpenWhatsApp" type="checkbox" />
-                Open WhatsApp tab immediately after assigning
-              </label>
-            </div>
-            <div class="inline-options">
-              <button type="submit">Assign Task</button>
-              <button id="requestNotificationPermission" type="button" class="secondary">Enable Browser Reminders</button>
-            </div>
-          </form>
-        </article>
-
-        <div class="grid two-col">
-          <article class="card">
-            <h3>Urgency Dashboard</h3>
-            <div id="urgencySummary" class="summary-row"></div>
-            <h4>Priority Queue</h4>
-            <div id="managerTaskList" class="stack"></div>
+            <div id="orderTable" class="table-wrap"></div>
           </article>
+        </section>
 
-          <article class="card">
-            <h3>Task Calendar</h3>
-            <div class="calendar-controls">
-              <button id="calendarPrevBtn" class="secondary" type="button">◀</button>
-              <strong id="calendarMonthLabel"></strong>
-              <button id="calendarNextBtn" class="secondary" type="button">▶</button>
-            </div>
-            <div id="calendarGrid" class="calendar-grid"></div>
-            <div id="calendarDayDetails" class="calendar-day-details"></div>
-          </article>
-        </div>
-
-        <div class="grid two-col">
-          <article class="card">
-            <h3>Employee Analytics</h3>
-            <div id="employeeAnalyticsList" class="stack"></div>
-          </article>
-
-          <article class="card">
-            <h3>Internal Messaging (Manager)</h3>
-            <form id="managerMessageForm" class="stack">
-              <div class="grid two-col">
-                <label>
-                  Employee
-                  <select id="managerMessageEmployeeSelect"></select>
-                </label>
-                <label>
-                  Task Context
-                  <select id="managerMessageTaskSelect"></select>
-                </label>
-              </div>
-              <label>
-                Message
-                <textarea id="managerMessageInput" rows="3" placeholder="Write instructions, clarifications, or updates"></textarea>
-              </label>
-              <button type="submit">Send Message as Manager</button>
-            </form>
-            <div id="managerConversation" class="conversation-thread"></div>
-          </article>
-        </div>
-      </section>
-
-      <section id="employeePanel" class="panel">
-        <article class="card">
-          <h3>Employee Dashboard</h3>
-          <label>
-            Employee
-            <select id="employeeSelectDashboard"></select>
-          </label>
-        </article>
-
-        <div class="grid two-col">
-          <article class="card">
-            <h3>Assigned Tasks</h3>
-            <div id="employeeTaskList" class="stack"></div>
-          </article>
-
-          <article class="card">
-            <h3>In-App & WhatsApp Notifications</h3>
-            <div id="employeeNotifications" class="stack"></div>
-          </article>
-        </div>
-
-        <article class="card">
-          <h3>Internal Messaging</h3>
-          <form id="employeeMessageForm" class="stack">
-            <label>
-              Task Context
-              <select id="employeeMessageTaskSelect"></select>
-            </label>
-            <label>
-              Message
-              <textarea id="employeeMessageInput" rows="3" placeholder="Send updates or questions to manager"></textarea>
-            </label>
-            <button type="submit">Send Message as Employee</button>
-          </form>
-          <div id="employeeConversation" class="conversation-thread"></div>
-        </article>
-      </section>
-
-      <section id="vendorPanel" class="panel">
-        <div class="grid two-col">
-          <article class="card">
-            <h3>Add Vendor</h3>
-            <form id="vendorForm" class="stack">
-              <label>
-                Vendor Name
-                <input id="vendorName" type="text" required placeholder="e.g. ABC Supplies Pvt Ltd" />
-              </label>
-              <label>
-                Contact Email
-                <input id="vendorContactEmail" type="email" placeholder="vendor@company.com" />
-              </label>
-              <label>
-                Goods They Stock
-                <textarea id="vendorGoods" rows="2" required placeholder="e.g. Laptops, Mouse, Keyboard"></textarea>
-              </label>
-              <label>
-                Default Cost Price
-                <input id="vendorDefaultCostPrice" type="number" min="0" step="0.01" required placeholder="e.g. 1200" />
-              </label>
-              <button type="submit">Save Vendor</button>
-            </form>
-          </article>
-
-          <article class="card">
-            <h3>Vendor Master</h3>
-            <div id="vendorList" class="stack"></div>
-          </article>
-        </div>
-
-        <div class="grid two-col">
-          <article class="card">
-            <h3>POs Raised</h3>
-            <form id="poForm" class="stack">
-              <div class="grid two-col">
-                <label>
-                  Vendor
-                  <select id="poVendorSelect" required></select>
-                </label>
-                <label>
-                  PO Number
-                  <input id="poNumber" type="text" required placeholder="e.g. PO-2026-105" />
-                </label>
-              </div>
-              <div class="grid two-col">
-                <label>
-                  Goods
-                  <input id="poGoods" type="text" required placeholder="e.g. Dell Latitude 7440" />
-                </label>
-                <label>
-                  Quantity
-                  <input id="poQuantity" type="number" min="1" required value="1" />
-                </label>
-              </div>
-              <div class="grid three-col">
-                <label>
-                  Cost Price
-                  <input id="poCostPrice" type="number" min="0" step="0.01" required />
-                </label>
-                <label>
-                  Raised Date
-                  <input id="poRaisedAt" type="date" required />
-                </label>
-                <label>
-                  Expected Date
-                  <input id="poExpectedAt" type="date" />
-                </label>
-              </div>
-              <label>
-                Status
-                <select id="poStatus">
-                  <option value="Open" selected>Open</option>
-                  <option value="Partially Received">Partially Received</option>
-                  <option value="Received">Received</option>
-                  <option value="Delayed">Delayed</option>
-                  <option value="Cancelled">Cancelled</option>
-                </select>
-              </label>
-              <button type="submit">Create PO</button>
-            </form>
-          </article>
-
-          <article class="card">
-            <h3>PO Tracker</h3>
-            <div id="poList" class="stack"></div>
-          </article>
-        </div>
-
-        <div class="grid two-col">
-          <article class="card">
-            <h3>Vendor Alerts (Manager)</h3>
-            <form id="vendorAlertForm" class="stack">
-              <div class="grid two-col">
-                <label>
-                  Vendor
-                  <select id="vendorAlertVendorSelect" required></select>
-                </label>
-                <label>
-                  PO Context
-                  <select id="vendorAlertPoSelect"></select>
-                </label>
-              </div>
-              <label>
-                Priority
-                <select id="vendorAlertPriority">
-                  <option value="Low">Low</option>
-                  <option value="Medium" selected>Medium</option>
-                  <option value="High">High</option>
-                  <option value="Critical">Critical</option>
-                </select>
-              </label>
-              <label>
-                Alert Message
-                <textarea id="vendorAlertMessage" rows="3" placeholder="e.g. Delivery delayed, expedite shipment for PO-2026-105"></textarea>
-              </label>
-              <button type="submit">Send Vendor Alert</button>
-            </form>
-          </article>
-
-          <article class="card">
-            <h3>Vendor Alert Log</h3>
-            <div id="vendorAlertList" class="stack"></div>
-          </article>
-        </div>
+        <section id="adminPage" class="page">
+          <div class="grid two">
+            <article class="card">
+              <h3>Create Manager</h3>
+              <form id="managerForm" class="form-grid">
+                <label>Name<input id="managerName" type="text" required></label>
+                <label>Email<input id="managerEmail" type="email" required></label>
+                <label>Phone<input id="managerPhone" type="text"></label>
+                <label>Password (optional)<input id="managerPassword" type="text" placeholder="Auto-generated if empty"></label>
+                <button type="submit">Generate Credentials</button>
+              </form>
+            </article>
+            <article class="card">
+              <h3>Accounts</h3>
+              <div id="adminUsersTable" class="table-wrap"></div>
+            </article>
+          </div>
+        </section>
       </section>
     </section>
   </main>
-
   <script src="app.js"></script>
 </body>
 </html>

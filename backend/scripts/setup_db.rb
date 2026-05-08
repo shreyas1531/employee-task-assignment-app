@@ -4,6 +4,7 @@ require "dotenv/load"
 require "pg"
 require "bcrypt"
 REQUIRED_TABLES = %w[users tasks sessions].freeze
+MIGRATIONS_DIR = File.expand_path("../db/migrations", __dir__)
 
 def database_url_candidates
   rack_env_key = ENV.fetch("RACK_ENV", "development").to_s.strip.upcase
@@ -56,6 +57,38 @@ connection = db_connection
 schema_path = File.expand_path("../db/schema.sql", __dir__)
 schema_sql = File.read(schema_path)
 connection.exec(schema_sql)
+
+connection.exec(<<~SQL)
+  CREATE TABLE IF NOT EXISTS schema_migrations (
+    version TEXT PRIMARY KEY,
+    applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  );
+SQL
+
+migration_files = if Dir.exist?(MIGRATIONS_DIR)
+  Dir.glob(File.join(MIGRATIONS_DIR, "*.sql")).sort
+else
+  []
+end
+
+migration_files.each do |migration_file|
+  version = File.basename(migration_file)
+  already_applied = connection.exec_params(
+    "SELECT 1 FROM schema_migrations WHERE version = $1 LIMIT 1",
+    [version]
+  ).first
+  next if already_applied
+
+  migration_sql = File.read(migration_file)
+  connection.transaction do |transaction|
+    transaction.exec(migration_sql)
+    transaction.exec_params(
+      "INSERT INTO schema_migrations (version, applied_at) VALUES ($1, NOW())",
+      [version]
+    )
+  end
+  puts "Applied migration: #{version}"
+end
 existing_tables = connection.exec_params(
   "SELECT tablename FROM pg_tables WHERE schemaname = $1 ORDER BY tablename",
   ["public"]
