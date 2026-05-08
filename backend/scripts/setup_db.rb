@@ -3,12 +3,41 @@
 require "dotenv/load"
 require "pg"
 require "bcrypt"
+REQUIRED_TABLES = %w[users tasks sessions].freeze
+
+def database_url_candidates
+  rack_env_key = ENV.fetch("RACK_ENV", "development").to_s.strip.upcase
+  candidates = ["DATABASE_URL"]
+  candidates << "#{rack_env_key}_MIGRATION_DATABASE_URL" unless rack_env_key.empty?
+  candidates << "MIGRATION_DATABASE_URL"
+  candidates << "#{rack_env_key}_DATABASE_URL" unless rack_env_key.empty?
+  candidates.concat(
+    %w[
+      RUNTIME_DATABASE_URL
+      PRODUCTION_MIGRATION_DATABASE_URL
+      STAGING_MIGRATION_DATABASE_URL
+      PRODUCTION_DATABASE_URL
+      STAGING_DATABASE_URL
+    ]
+  )
+  candidates.uniq
+end
+
+def resolved_database_url_with_key
+  database_url_candidates.each do |candidate_key|
+    candidate_value = ENV[candidate_key].to_s.strip
+    return [candidate_key, candidate_value] unless candidate_value.empty?
+  end
+  [nil, ""]
+end
 
 def db_connection
-  database_url = ENV["DATABASE_URL"].to_s.strip
+  database_url_key, database_url = resolved_database_url_with_key
   if !database_url.empty?
+    puts "Database URL source: #{database_url_key}"
     PG.connect(database_url)
   else
+    puts "Database URL source: DB_HOST/DB_PORT/DB_NAME/DB_USER"
     PG.connect(
       host: ENV.fetch("DB_HOST", "127.0.0.1"),
       port: Integer(ENV.fetch("DB_PORT", "5432")),
@@ -27,6 +56,17 @@ connection = db_connection
 schema_path = File.expand_path("../db/schema.sql", __dir__)
 schema_sql = File.read(schema_path)
 connection.exec(schema_sql)
+existing_tables = connection.exec_params(
+  "SELECT tablename FROM pg_tables WHERE schemaname = $1 ORDER BY tablename",
+  ["public"]
+).map { |row| row["tablename"] }
+missing_tables = REQUIRED_TABLES.reject { |table_name| existing_tables.include?(table_name) }
+if missing_tables.empty?
+  puts "Migration status: up-to-date"
+else
+  abort("Migration status: failed; missing required tables: #{missing_tables.join(', ')}")
+end
+puts "Created tables: #{existing_tables.join(', ')}"
 
 manager_email = normalize_email(ENV.fetch("MANAGER_EMAIL", "manager@taskapp.local"))
 manager_password = ENV.fetch("MANAGER_PASSWORD", "manager123").to_s

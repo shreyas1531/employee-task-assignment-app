@@ -14,6 +14,7 @@ class TaskAssignmentAPI < Sinatra::Base
   MAX_ATTACHMENT_COUNT = 5
   MAX_ATTACHMENT_BYTES = 1 * 1024 * 1024
   MAX_TOTAL_ATTACHMENT_BYTES = 4 * 1024 * 1024
+  REQUIRED_STARTUP_TABLES = %w[users tasks sessions].freeze
   URGENCY_LEVELS = %w[Low Medium High Critical].freeze
   PO_STATUSES = [
     "Open",
@@ -23,6 +24,57 @@ class TaskAssignmentAPI < Sinatra::Base
     "Cancelled"
   ].freeze
   ALERT_PRIORITIES = %w[Low Medium High Critical].freeze
+  class << self
+    def runtime_database_url_candidates
+      rack_env_key = ENV.fetch("RACK_ENV", "development").to_s.strip.upcase
+      candidates = ["DATABASE_URL"]
+      candidates << "#{rack_env_key}_DATABASE_URL" unless rack_env_key.empty?
+      candidates.concat(%w[RUNTIME_DATABASE_URL PRODUCTION_DATABASE_URL STAGING_DATABASE_URL])
+      candidates.uniq
+    end
+
+    def resolved_runtime_database_url
+      runtime_database_url_candidates.each do |candidate_key|
+        candidate_value = ENV[candidate_key].to_s.strip
+        return candidate_value unless candidate_value.empty?
+      end
+      ""
+    end
+
+    def startup_check_connection
+      database_url = resolved_runtime_database_url
+      if !database_url.empty?
+        PG.connect(database_url)
+      else
+        PG.connect(
+          host: ENV.fetch("DB_HOST", "127.0.0.1"),
+          port: Integer(ENV.fetch("DB_PORT", "5432")),
+          dbname: ENV.fetch("DB_NAME", "task_assignment"),
+          user: ENV.fetch("DB_USER", "postgres"),
+          password: ENV.fetch("DB_PASSWORD", "postgres")
+        )
+      end
+    end
+
+    def validate_startup_database!
+      rack_env = ENV.fetch("RACK_ENV", "development").to_s.strip.downcase
+      if rack_env == "production" && resolved_runtime_database_url.empty?
+        raise "Missing runtime database URL in production. Set DATABASE_URL (preferred) or PRODUCTION_DATABASE_URL/RUNTIME_DATABASE_URL."
+      end
+
+      connection = startup_check_connection
+      existing_tables = connection.exec_params(
+        "SELECT tablename FROM pg_tables WHERE schemaname = $1",
+        ["public"]
+      ).map { |row| row["tablename"] }
+      missing_tables = REQUIRED_STARTUP_TABLES.reject { |table_name| existing_tables.include?(table_name) }
+      unless missing_tables.empty?
+        raise "Missing required database tables: #{missing_tables.join(', ')}. Run bundle exec ruby scripts/setup_db.rb."
+      end
+    ensure
+      connection&.close
+    end
+  end
 
   configure do
     frontend_root = ENV["FRONTEND_ROOT"].to_s.strip
@@ -40,6 +92,9 @@ class TaskAssignmentAPI < Sinatra::Base
     set :rate_limit_store, {}
     set :rate_limit_mutex, Mutex.new
     set :frontend_root, frontend_root.empty? ? File.expand_path("..", __dir__) : File.expand_path(frontend_root, __dir__)
+    if ENV.fetch("DB_STARTUP_CHECKS", "1") == "1"
+      TaskAssignmentAPI.validate_startup_database!
+    end
   end
 
   before do
@@ -144,8 +199,7 @@ class TaskAssignmentAPI < Sinatra::Base
       if defined?(@db_connection) && @db_connection && @db_connection.status == PG::CONNECTION_OK
         return @db_connection
       end
-
-      database_url = ENV["DATABASE_URL"].to_s.strip
+      database_url = TaskAssignmentAPI.resolved_runtime_database_url
       @db_connection = if !database_url.empty?
         PG.connect(database_url)
       else
