@@ -31,6 +31,7 @@
           <button data-page="tasks" class="active">Tasks</button>
           <button data-page="vendors">Vendor Database</button>
           <button data-page="sales">Sales & Orders</button>
+          <button data-page="po">PO Management</button>
           <button data-page="admin" id="adminNavBtn">Admin</button>
         </nav>
         <button id="logoutBtn" class="danger">Logout</button>
@@ -134,6 +135,10 @@
         </section>
 
         <section id="salesPage" class="page">
+          <article class="card">
+            <h3>Sales Analytics</h3>
+            <div id="salesMetricsCards" class="cards"></div>
+          </article>
           <div class="grid two">
             <article class="card">
               <h3>Add Client</h3>
@@ -173,7 +178,54 @@
           </article>
         </section>
 
+        <section id="poPage" class="page">
+          <article class="card">
+            <h3>PO Analytics</h3>
+            <div id="poMetricsCards" class="cards"></div>
+          </article>
+          <div class="grid two">
+            <article class="card">
+              <h3>Create Purchase Order</h3>
+              <form id="purchaseOrderForm" class="form-grid">
+                <label>PO Number<input id="poNumber" type="text" required></label>
+                <label>Vendor<select id="poVendorId"></select></label>
+                <label>Product Name<input id="poProductName" type="text" required></label>
+                <label>Item Code<input id="poItemCode" type="text" required></label>
+                <label>Goods Description<textarea id="poGoods" rows="2"></textarea></label>
+                <label>Quantity<input id="poQuantity" type="number" min="1" value="1"></label>
+                <label>Unit Price<input id="poUnitPrice" type="number" min="0" step="0.01" value="0"></label>
+                <label>Total Amount<input id="poTotalAmount" type="number" min="0" step="0.01" value="0"></label>
+                <label>Order Date<input id="poOrderDate" type="datetime-local" required></label>
+                <label>Expected Delivery<input id="poExpectedDeliveryDate" type="datetime-local" required></label>
+                <label>Status
+                  <select id="poStatus">
+                    <option>Draft</option><option>Approved</option><option>Ordered</option><option>In Transit</option><option>Delivered</option><option>Cancelled</option>
+                  </select>
+                </label>
+                <label>Assigned Employee<select id="poAssignedEmployeeId"></select></label>
+                <label>Notes<textarea id="poNotes" rows="2"></textarea></label>
+                <button type="submit">Save Purchase Order</button>
+              </form>
+            </article>
+            <article class="card">
+              <h3>PO Detail</h3>
+              <div id="poDetailPanel" class="table-wrap"><div class="empty">Select a purchase order to view detail.</div></div>
+            </article>
+          </div>
+          <article class="card">
+            <div class="toolbar">
+              <h3>Purchase Orders</h3>
+              <input id="poSearch" type="search" placeholder="Search by PO number, item, or goods">
+            </div>
+            <div id="poTable" class="table-wrap"></div>
+          </article>
+        </section>
+
         <section id="adminPage" class="page">
+          <article class="card">
+            <h3>Admin Metrics</h3>
+            <div id="adminMetricsCards" class="cards"></div>
+          </article>
           <div class="grid two">
             <article class="card">
               <h3>Create Manager</h3>
@@ -190,6 +242,10 @@
               <div id="adminUsersTable" class="table-wrap"></div>
             </article>
           </div>
+          <article class="card">
+            <h3>Recent Activity</h3>
+            <div id="activityLogsTable" class="table-wrap"></div>
+          </article>
         </section>
       </section>
     </section>

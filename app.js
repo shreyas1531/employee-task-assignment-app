@@ -8,6 +8,11 @@ const APP_STATE = {
     products: [],
     clients: [],
     orders: [],
+    purchaseOrders: [],
+    salesAnalytics: {},
+    poAnalytics: {},
+    adminMetrics: null,
+    activityLogs: [],
     users: []
   },
   page: "tasks"
@@ -28,6 +33,7 @@ const el = {
     tasks: document.getElementById("tasksPage"),
     vendors: document.getElementById("vendorsPage"),
     sales: document.getElementById("salesPage"),
+    po: document.getElementById("poPage"),
     admin: document.getElementById("adminPage")
   },
   employeeForm: document.getElementById("employeeForm"),
@@ -80,12 +86,33 @@ const el = {
   orderStatus: document.getElementById("orderStatus"),
   orderSearch: document.getElementById("orderSearch"),
   orderTable: document.getElementById("orderTable"),
+  salesMetricsCards: document.getElementById("salesMetricsCards"),
+  purchaseOrderForm: document.getElementById("purchaseOrderForm"),
+  poNumber: document.getElementById("poNumber"),
+  poVendorId: document.getElementById("poVendorId"),
+  poProductName: document.getElementById("poProductName"),
+  poItemCode: document.getElementById("poItemCode"),
+  poGoods: document.getElementById("poGoods"),
+  poQuantity: document.getElementById("poQuantity"),
+  poUnitPrice: document.getElementById("poUnitPrice"),
+  poTotalAmount: document.getElementById("poTotalAmount"),
+  poOrderDate: document.getElementById("poOrderDate"),
+  poExpectedDeliveryDate: document.getElementById("poExpectedDeliveryDate"),
+  poStatus: document.getElementById("poStatus"),
+  poAssignedEmployeeId: document.getElementById("poAssignedEmployeeId"),
+  poNotes: document.getElementById("poNotes"),
+  poSearch: document.getElementById("poSearch"),
+  poTable: document.getElementById("poTable"),
+  poDetailPanel: document.getElementById("poDetailPanel"),
+  poMetricsCards: document.getElementById("poMetricsCards"),
   managerForm: document.getElementById("managerForm"),
   managerName: document.getElementById("managerName"),
   managerEmail: document.getElementById("managerEmail"),
   managerPhone: document.getElementById("managerPhone"),
   managerPassword: document.getElementById("managerPassword"),
-  adminUsersTable: document.getElementById("adminUsersTable")
+  adminUsersTable: document.getElementById("adminUsersTable"),
+  adminMetricsCards: document.getElementById("adminMetricsCards"),
+  activityLogsTable: document.getElementById("activityLogsTable")
 };
 
 bootstrap();
@@ -116,6 +143,10 @@ function bindEvents() {
   el.orderForm.addEventListener("submit", onCreateOrder);
   el.orderTable.addEventListener("change", onOrderStatusChange);
   el.orderSearch.addEventListener("input", renderOrders);
+  el.purchaseOrderForm.addEventListener("submit", onCreatePurchaseOrder);
+  el.poSearch.addEventListener("input", renderPurchaseOrders);
+  el.poTable.addEventListener("change", onPurchaseOrderStatusChange);
+  el.poTable.addEventListener("click", onPurchaseOrderClick);
   el.managerForm.addEventListener("submit", onCreateManager);
   el.adminUsersTable.addEventListener("click", onAdminUserAction);
 }
@@ -187,6 +218,11 @@ async function refreshWorkspace() {
     products: payload.products || [],
     clients: payload.clients || [],
     orders: payload.orders || [],
+    purchaseOrders: payload.purchaseOrders || [],
+    salesAnalytics: payload.salesAnalytics || {},
+    poAnalytics: payload.poAnalytics || {},
+    adminMetrics: payload.adminMetrics || null,
+    activityLogs: payload.activityLogs || [],
     users: APP_STATE.workspace.users || []
   };
   if (isAdmin()) {
@@ -237,9 +273,8 @@ function onNavClick(event) {
 
 function renderPages() {
   const role = currentRole();
-  const allowed = role === "admin" ? ["tasks", "vendors", "sales", "admin"] : ["tasks", "vendors", "sales"];
+  const allowed = role === "admin" ? ["tasks", "vendors", "sales", "po", "admin"] : ["tasks", "vendors", "sales", "po"];
   if (!allowed.includes(APP_STATE.page)) APP_STATE.page = "tasks";
-
   Object.entries(el.pages).forEach(([name, node]) => {
     node.classList.toggle("active", name === APP_STATE.page);
   });
@@ -247,7 +282,15 @@ function renderPages() {
     button.classList.toggle("active", button.dataset.page === APP_STATE.page);
     button.classList.toggle("hidden", button.dataset.page === "admin" && !isAdmin());
   });
-  el.pageTitle.textContent = APP_STATE.page === "sales" ? "Sales & Orders" : APP_STATE.page === "vendors" ? "Vendor Database" : APP_STATE.page === "admin" ? "Admin" : "Tasks";
+  el.pageTitle.textContent = APP_STATE.page === "sales"
+    ? "Sales & Orders"
+    : APP_STATE.page === "vendors"
+      ? "Vendor Database"
+      : APP_STATE.page === "po"
+        ? "PO Management"
+        : APP_STATE.page === "admin"
+          ? "Admin"
+          : "Tasks";
 }
 
 function renderAll() {
@@ -256,8 +299,13 @@ function renderAll() {
   renderTasks();
   renderVendors();
   renderProducts();
+  renderSalesMetrics();
   renderOrders();
+  renderPoMetrics();
+  renderPurchaseOrders();
+  renderAdminMetrics();
   renderAdminUsers();
+  renderActivityLogs();
 }
 
 function renderSelectors() {
@@ -265,11 +313,15 @@ function renderSelectors() {
   const vendorOptions = APP_STATE.workspace.vendors.map((vendor) => `<option value="${vendor.id}">${escapeHtml(vendor.name)}</option>`).join("");
   const clientOptions = APP_STATE.workspace.clients.map((client) => `<option value="${client.id}">${escapeHtml(client.name)}</option>`).join("");
   const productOptions = APP_STATE.workspace.products.map((product) => `<option value="${product.id}">${escapeHtml(product.name)} (${escapeHtml(product.itemCode)})</option>`).join("");
+  const employeeOptionsWithBlank = `<option value="">Unassigned</option>${employeeOptions}`;
+
   el.taskAssignee.innerHTML = employeeOptions || "<option value=\"\">No employees</option>";
   el.orderEmployeeId.innerHTML = employeeOptions || "<option value=\"\">No employees</option>";
   el.productVendorId.innerHTML = vendorOptions || "<option value=\"\">No vendors</option>";
   el.orderClientId.innerHTML = clientOptions || "<option value=\"\">No clients</option>";
   el.orderProductId.innerHTML = productOptions || "<option value=\"\">No products</option>";
+  el.poVendorId.innerHTML = vendorOptions || "<option value=\"\">No vendors</option>";
+  el.poAssignedEmployeeId.innerHTML = employeeOptionsWithBlank;
 
   const canManage = isPrivileged();
   setDisabled([el.employeeName, el.employeeEmail, el.employeePassword, el.employeePhone], !canManage);
@@ -284,11 +336,20 @@ function renderSelectors() {
   el.clientForm.querySelector("button").disabled = !canManage;
   setDisabled([el.orderId, el.orderClientId, el.orderProductId, el.orderEmployeeId, el.orderQuantity, el.orderDueDate, el.orderStatus], !canManage);
   el.orderForm.querySelector("button").disabled = !canManage;
+
+  const canManagePo = Boolean(APP_STATE.session?.token);
+  setDisabled(
+    [el.poNumber, el.poVendorId, el.poProductName, el.poItemCode, el.poGoods, el.poQuantity, el.poUnitPrice, el.poTotalAmount, el.poOrderDate, el.poExpectedDeliveryDate, el.poStatus, el.poAssignedEmployeeId, el.poNotes],
+    !canManagePo
+  );
+  el.purchaseOrderForm.querySelector("button").disabled = !canManagePo;
+  if (!isPrivileged()) el.poAssignedEmployeeId.value = APP_STATE.session.user.id;
+
   el.managerForm.querySelector("button").disabled = !isAdmin();
 }
 
 function setDisabled(nodes, disabled) {
-  nodes.forEach((node) => { node.disabled = disabled; });
+  nodes.forEach((node) => { if (node) node.disabled = disabled; });
 }
 
 function renderTasks() {
@@ -351,6 +412,17 @@ function renderProducts() {
   ` : "<div class='empty'>No products found.</div>";
 }
 
+function renderSalesMetrics() {
+  const analytics = APP_STATE.workspace.salesAnalytics || {};
+  const cards = [
+    { label: "Total Orders", value: analytics.totalOrders || 0 },
+    { label: "Pending Orders", value: analytics.pendingOrders || 0 },
+    { label: "Delivered Orders", value: analytics.deliveredOrders || 0 },
+    { label: "Revenue Summary", value: formatCurrency(analytics.revenueSummary || 0) }
+  ];
+  el.salesMetricsCards.innerHTML = cards.map((card) => `<article class="mini-card"><p>${card.label}</p><h4>${card.value}</h4></article>`).join("");
+}
+
 function renderOrders() {
   const q = el.orderSearch.value.trim().toLowerCase();
   const rows = APP_STATE.workspace.orders.filter((order) => `${order.orderId} ${order.clientName} ${order.itemCode}`.toLowerCase().includes(q));
@@ -382,6 +454,67 @@ function renderOrders() {
   `;
 }
 
+function renderPoMetrics() {
+  const analytics = APP_STATE.workspace.poAnalytics || {};
+  const cards = [
+    { label: "Total POs", value: analytics.totalPurchaseOrders || 0 },
+    { label: "Pending POs", value: analytics.pendingPurchaseOrders || 0 },
+    { label: "Delivered POs", value: analytics.deliveredPurchaseOrders || 0 },
+    { label: "Overdue POs", value: analytics.overduePurchaseOrders || 0 },
+    { label: "PO Value", value: formatCurrency(analytics.purchaseOrderValue || 0) }
+  ];
+  el.poMetricsCards.innerHTML = cards.map((card) => `<article class="mini-card"><p>${card.label}</p><h4>${card.value}</h4></article>`).join("");
+}
+
+function renderPurchaseOrders() {
+  const q = el.poSearch.value.trim().toLowerCase();
+  const rows = APP_STATE.workspace.purchaseOrders.filter((po) => `${po.poNumber} ${po.productName} ${po.itemCode} ${po.goods}`.toLowerCase().includes(q));
+  if (!rows.length) {
+    el.poTable.innerHTML = "<div class='empty'>No purchase orders found.</div>";
+    return;
+  }
+  el.poTable.innerHTML = `
+    <table><thead><tr><th>PO</th><th>Product</th><th>Item</th><th>Qty</th><th>Total</th><th>Expected</th><th>Status</th><th>Assigned</th></tr></thead><tbody>
+      ${rows.map((po) => {
+        const canEdit = isPrivileged() || APP_STATE.session.user.id === po.assignedEmployeeId;
+        const dueClass = po.isOverdue ? "overdue" : po.isDueSoon ? "due-soon" : "";
+        return `
+          <tr data-po-row-id="${po.id}">
+            <td><button data-po-view-id="${po.id}" class="mini">${escapeHtml(po.poNumber)}</button></td>
+            <td>${escapeHtml(po.productName)}</td>
+            <td>${escapeHtml(po.itemCode)}</td>
+            <td>${Number(po.quantity || 0)}</td>
+            <td>${formatCurrency(po.totalAmount || 0)}</td>
+            <td><span class="${dueClass}">${formatDateTime(po.expectedDeliveryDate)}</span></td>
+            <td><select data-po-id="${po.id}" ${canEdit ? "" : "disabled"}>
+              ${["Draft", "Approved", "Ordered", "In Transit", "Delivered", "Cancelled"].map((status) => `<option ${po.status === status ? "selected" : ""}>${status}</option>`).join("")}
+            </select></td>
+            <td>${escapeHtml(po.assignedEmployeeName || "-")}</td>
+          </tr>
+        `;
+      }).join("")}
+    </tbody></table>
+  `;
+}
+
+function renderAdminMetrics() {
+  if (!isAdmin() || !APP_STATE.workspace.adminMetrics) {
+    el.adminMetricsCards.innerHTML = "<div class='empty'>Admin metrics are visible to admin users only.</div>";
+    return;
+  }
+  const m = APP_STATE.workspace.adminMetrics;
+  const cards = [
+    { label: "Employees", value: m.employeeCount || 0 },
+    { label: "Tasks", value: m.taskCount || 0 },
+    { label: "Pending Tasks", value: m.pendingTaskCount || 0 },
+    { label: "Pending Orders", value: m.pendingOrderCount || 0 },
+    { label: "Vendors", value: m.vendorCount || 0 },
+    { label: "Clients", value: m.clientCount || 0 },
+    { label: "Products", value: m.productCount || 0 }
+  ];
+  el.adminMetricsCards.innerHTML = cards.map((card) => `<article class="mini-card"><p>${card.label}</p><h4>${card.value}</h4></article>`).join("");
+}
+
 function renderAdminUsers() {
   if (!isAdmin()) {
     el.adminUsersTable.innerHTML = "<div class='empty'>Admin access required.</div>";
@@ -403,6 +536,30 @@ function renderAdminUsers() {
             <button data-action="reset-password" data-user-id="${user.id}" class="mini">Reset Password</button>
             <button data-action="toggle-status" data-user-id="${user.id}" data-active="${user.isActive ? "1" : "0"}" class="mini">${user.isActive ? "Disable" : "Enable"}</button>
           </td>
+        </tr>
+      `).join("")}
+    </tbody></table>
+  `;
+}
+
+function renderActivityLogs() {
+  if (!isAdmin()) {
+    el.activityLogsTable.innerHTML = "<div class='empty'>Admin access required.</div>";
+    return;
+  }
+  const rows = APP_STATE.workspace.activityLogs || [];
+  if (!rows.length) {
+    el.activityLogsTable.innerHTML = "<div class='empty'>No activity logs found.</div>";
+    return;
+  }
+  el.activityLogsTable.innerHTML = `
+    <table><thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Entity</th></tr></thead><tbody>
+      ${rows.map((row) => `
+        <tr>
+          <td>${formatDateTime(row.createdAt)}</td>
+          <td>${escapeHtml(row.actorName || row.actorRole || "-")}</td>
+          <td>${escapeHtml(row.action)}</td>
+          <td>${escapeHtml(`${row.entityType || "-"} ${row.entityId || ""}`.trim())}</td>
         </tr>
       `).join("")}
     </tbody></table>
@@ -552,6 +709,7 @@ async function onCreateOrder(event) {
     });
     await refreshWorkspace();
     renderOrders();
+    renderSalesMetrics();
     el.orderForm.reset();
     showToast("Order saved", "success");
   } catch (error) {
@@ -566,7 +724,81 @@ async function onOrderStatusChange(event) {
     await api(`/orders/${encodeURIComponent(select.dataset.orderId)}/status`, { method: "PUT", body: { deliveryStatus: select.value } });
     await refreshWorkspace();
     renderOrders();
+    renderSalesMetrics();
     showToast("Order status updated", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function onCreatePurchaseOrder(event) {
+  event.preventDefault();
+  try {
+    await api("/purchase-orders", {
+      method: "POST",
+      body: {
+        poNumber: el.poNumber.value,
+        vendorId: el.poVendorId.value,
+        productName: el.poProductName.value,
+        itemCode: el.poItemCode.value,
+        goods: el.poGoods.value,
+        quantity: Number(el.poQuantity.value || 1),
+        unitPrice: Number(el.poUnitPrice.value || 0),
+        totalAmount: Number(el.poTotalAmount.value || 0),
+        orderDate: new Date(el.poOrderDate.value).toISOString(),
+        expectedDeliveryDate: new Date(el.poExpectedDeliveryDate.value).toISOString(),
+        status: el.poStatus.value,
+        assignedEmployeeId: el.poAssignedEmployeeId.value,
+        notes: el.poNotes.value
+      }
+    });
+    await refreshWorkspace();
+    renderPoMetrics();
+    renderPurchaseOrders();
+    el.purchaseOrderForm.reset();
+    showToast("Purchase order saved", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function onPurchaseOrderStatusChange(event) {
+  const select = event.target.closest("select[data-po-id]");
+  if (!select) return;
+  try {
+    await api(`/purchase-orders/${encodeURIComponent(select.dataset.poId)}/status`, { method: "PUT", body: { status: select.value } });
+    await refreshWorkspace();
+    renderPoMetrics();
+    renderPurchaseOrders();
+    showToast("PO status updated", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function onPurchaseOrderClick(event) {
+  const button = event.target.closest("button[data-po-view-id]");
+  if (!button) return;
+  try {
+    const payload = await api(`/purchase-orders/${encodeURIComponent(button.dataset.poViewId)}`);
+    const po = payload.purchaseOrder;
+    const related = payload.relatedSalesOrders || [];
+    const timeline = payload.timeline || [];
+    el.poDetailPanel.innerHTML = `
+      <div class="stack">
+        <p><strong>PO:</strong> ${escapeHtml(po.poNumber)}</p>
+        <p><strong>Status:</strong> ${escapeHtml(po.status)}</p>
+        <p><strong>Vendor:</strong> ${escapeHtml(String(po.vendorId || "-"))}</p>
+        <p><strong>Product:</strong> ${escapeHtml(po.productName)}</p>
+        <p><strong>Item Code:</strong> ${escapeHtml(po.itemCode)}</p>
+        <p><strong>Expected Delivery:</strong> ${formatDateTime(po.expectedDeliveryDate)}</p>
+        <p><strong>Notes:</strong> ${escapeHtml(po.notes || "-")}</p>
+      </div>
+      <h4>Linked Sales Orders</h4>
+      ${related.length ? `<ul>${related.map((order) => `<li>${escapeHtml(order.orderId)} • ${escapeHtml(order.clientName)} • ${escapeHtml(order.deliveryStatus)}</li>`).join("")}</ul>` : "<div class='empty'>No related orders.</div>"}
+      <h4>Timeline</h4>
+      ${timeline.length ? `<ul>${timeline.map((item) => `<li>${formatDateTime(item.createdAt)} • ${escapeHtml(item.actorName || item.actorRole || "-")} • ${escapeHtml(item.action)}</li>`).join("")}</ul>` : "<div class='empty'>No timeline entries.</div>"}
+    `;
   } catch (error) {
     showToast(error.message, "error");
   }
@@ -604,6 +836,7 @@ async function onAdminUserAction(event) {
     }
     await refreshWorkspace();
     renderAdminUsers();
+    renderAdminMetrics();
   } catch (error) {
     showToast(error.message, "error");
   }
@@ -617,4 +850,10 @@ function formatDateTime(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "-";
   return date.toLocaleString(undefined, { year: "numeric", month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
+
+function formatCurrency(value) {
+  const number = Number(value || 0);
+  if (!Number.isFinite(number)) return "₹0.00";
+  return `₹${number.toFixed(2)}`;
 }
