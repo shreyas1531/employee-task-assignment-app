@@ -16,14 +16,19 @@ class TaskAssignmentAPI < Sinatra::Base
   MAX_TOTAL_ATTACHMENT_BYTES = 4 * 1024 * 1024
   REQUIRED_STARTUP_TABLES = %w[users tasks sessions].freeze
   URGENCY_LEVELS = %w[Low Medium High Critical].freeze
+  TASK_STATUSES = ["Pending", "In Progress", "Completed"].freeze
   PO_STATUSES = [
-    "Open",
-    "Partially Received",
-    "Received",
-    "Delayed",
+    "Draft",
+    "Approved",
+    "Ordered",
+    "In Transit",
+    "Delivered",
     "Cancelled"
   ].freeze
   ALERT_PRIORITIES = %w[Low Medium High Critical].freeze
+  VENDOR_STATUSES = %w[Active Inactive].freeze
+  STOCK_STATUSES = ["In Stock", "Low Stock", "Out of Stock"].freeze
+  ORDER_STATUSES = %w[Pending Processing Delivered Cancelled].freeze
   class << self
     def runtime_database_url_candidates
       rack_env_key = ENV.fetch("RACK_ENV", "development").to_s.strip.upcase
@@ -31,6 +36,10 @@ class TaskAssignmentAPI < Sinatra::Base
       candidates << "#{rack_env_key}_DATABASE_URL" unless rack_env_key.empty?
       candidates.concat(%w[RUNTIME_DATABASE_URL PRODUCTION_DATABASE_URL STAGING_DATABASE_URL])
       candidates.uniq
+    end
+
+    def sanitize_sort_direction(value)
+      value.to_s.strip.downcase == "asc" ? "ASC" : "DESC"
     end
 
     def resolved_runtime_database_url
@@ -340,6 +349,7 @@ class TaskAssignmentAPI < Sinatra::Base
         name: row["full_name"],
         phone: row["phone"],
         role: row["role"],
+        isActive: row["is_active"] != "f",
         createdAt: row["created_at"],
         updatedAt: row["updated_at"]
       }
@@ -378,6 +388,96 @@ class TaskAssignmentAPI < Sinatra::Base
       }
     end
 
+    def create_activity_log(actor:, action:, entity_type:, entity_id: nil, details: nil)
+      db_exec(
+        <<~SQL,
+          INSERT INTO activity_logs (id, actor_user_id, actor_role, action, entity_type, entity_id, details, created_at)
+          VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6::jsonb, NOW())
+        SQL
+        [
+          actor[:id],
+          actor[:role],
+          action,
+          entity_type,
+          entity_id,
+          details ? JSON.generate(details) : nil
+        ]
+      )
+    rescue StandardError
+      nil
+    end
+
+    def fetch_purchase_orders(current_user:, include_all: false)
+      privileged_user = manager_or_admin?(current_user)
+      where_clauses = []
+      sql_params = []
+      if !privileged_user && !include_all
+        where_clauses << "po.assigned_employee_id = $#{sql_params.length + 1}"
+        sql_params << current_user[:id]
+      end
+      where_sql = where_clauses.empty? ? "" : "WHERE #{where_clauses.join(' AND ')}"
+      db_exec(
+        <<~SQL,
+          SELECT po.id,
+                 po.vendor_id,
+                 v.name AS vendor_name,
+                 po.po_number,
+                 po.product_name,
+                 po.item_code,
+                 po.goods,
+                 po.quantity,
+                 po.unit_price,
+                 po.cost_price,
+                 po.total_amount,
+                 po.order_date,
+                 po.raised_at,
+                 po.expected_delivery_date,
+                 po.expected_at,
+                 po.status,
+                 po.assigned_employee_id,
+                 u.full_name AS assigned_employee_name,
+                 po.notes,
+                 po.created_at
+          FROM purchase_orders po
+          JOIN vendors v ON v.id = po.vendor_id
+          LEFT JOIN users u ON u.id = po.assigned_employee_id
+          #{where_sql}
+          ORDER BY po.order_date DESC, po.created_at DESC
+        SQL
+        sql_params
+      ).map { |row| serialize_purchase_order_row(row) }
+    end
+
+    def build_sales_analytics(orders)
+      total_orders = orders.length
+      pending_orders = orders.count { |order| %w[Pending Processing].include?(order[:deliveryStatus]) }
+      delivered_orders = orders.count { |order| order[:deliveryStatus] == "Delivered" }
+      revenue = orders.reduce(0.0) do |sum, order|
+        next sum unless order[:deliveryStatus] == "Delivered"
+        next sum if order[:quantity].nil?
+
+        unit_price = order[:unitPrice] || 0.0
+        sum + (order[:quantity].to_f * unit_price.to_f)
+      end
+
+      {
+        totalOrders: total_orders,
+        pendingOrders: pending_orders,
+        deliveredOrders: delivered_orders,
+        revenueSummary: revenue.round(2)
+      }
+    end
+
+    def build_po_analytics(purchase_orders)
+      {
+        totalPurchaseOrders: purchase_orders.length,
+        pendingPurchaseOrders: purchase_orders.count { |po| %w[Draft Approved Ordered In Transit].include?(po[:status]) },
+        deliveredPurchaseOrders: purchase_orders.count { |po| po[:status] == "Delivered" },
+        overduePurchaseOrders: purchase_orders.count { |po| po[:isOverdue] == true },
+        purchaseOrderValue: purchase_orders.reduce(0.0) { |sum, po| sum + po[:totalAmount].to_f }.round(2)
+      }
+    end
+
     def serialize_message_row(row)
       {
         id: row["id"],
@@ -394,6 +494,10 @@ class TaskAssignmentAPI < Sinatra::Base
         id: row["id"],
         name: row["name"],
         contactEmail: row["contact_email"],
+        contactPhone: row["contact_phone"] || "",
+        city: row["city"] || "",
+        status: row["status"] || "Active",
+        productsSupplied: row["products_supplied"].to_i,
         goods: parse_json_column(row["goods"], []),
         defaultCostPrice: row["default_cost_price"].to_f,
         createdAt: row["created_at"],
@@ -401,17 +505,93 @@ class TaskAssignmentAPI < Sinatra::Base
       }
     end
 
+    def serialize_product_row(row)
+      {
+        id: row["id"],
+        vendorId: row["vendor_id"],
+        vendorName: row["vendor_name"] || "",
+        name: row["name"],
+        itemCode: row["item_code"],
+        quantity: row["quantity"].to_i,
+        category: row["category"] || "",
+        stockStatus: row["stock_status"],
+        createdAt: row["created_at"],
+        updatedAt: row["updated_at"]
+      }
+    end
+
+    def serialize_client_row(row)
+      {
+        id: row["id"],
+        name: row["name"],
+        contactEmail: row["contact_email"],
+        contactPhone: row["contact_phone"],
+        city: row["city"],
+        status: row["status"],
+        createdAt: row["created_at"],
+        updatedAt: row["updated_at"]
+      }
+    end
+
+    def serialize_order_row(row)
+      due_at = row["due_at"] ? Time.parse(row["due_at"]) : nil
+      now = Time.now.utc
+      due_soon_cutoff = now + (48 * 60 * 60)
+      is_delivered = row["delivery_status"] == "Delivered"
+      is_cancelled = row["delivery_status"] == "Cancelled"
+      overdue = due_at && !is_delivered && !is_cancelled && due_at < now
+      due_soon = due_at && !is_delivered && !is_cancelled && due_at >= now && due_at <= due_soon_cutoff
+
+      {
+        id: row["id"],
+        orderId: row["order_number"],
+        clientId: row["client_id"],
+        clientName: row["client_name"] || "",
+        productId: row["product_id"],
+        productName: row["product_name"] || "",
+        itemCode: row["item_code"] || "",
+        quantity: row["quantity"].to_i,
+        dueDate: row["due_at"],
+        deliveryStatus: row["delivery_status"],
+        assignedEmployeeId: row["assigned_employee_id"],
+        assignedEmployeeName: row["assigned_employee_name"] || "",
+        isOverdue: overdue == true,
+        isDueSoon: due_soon == true,
+        createdAt: row["created_at"],
+        updatedAt: row["updated_at"]
+      }
+    end
+
     def serialize_purchase_order_row(row)
+      expected_delivery = row["expected_delivery_date"] || row["expected_at"]
+      parsed_expected = expected_delivery ? Time.parse(expected_delivery) : nil
+      now = Time.now.utc
+      due_soon_cutoff = now + (72 * 60 * 60)
+      delivered = row["status"] == "Delivered"
+      cancelled = row["status"] == "Cancelled"
+      overdue = parsed_expected && !delivered && !cancelled && parsed_expected < now
+      due_soon = parsed_expected && !delivered && !cancelled && parsed_expected >= now && parsed_expected <= due_soon_cutoff
       {
         id: row["id"],
         vendorId: row["vendor_id"],
         poNumber: row["po_number"],
-        goods: row["goods"],
+        productName: row["product_name"] || row["goods"] || "",
+        itemCode: row["item_code"] || "",
+        goods: row["goods"] || "",
         quantity: row["quantity"].to_i,
-        costPrice: row["cost_price"].to_f,
-        raisedAt: row["raised_at"],
-        expectedAt: row["expected_at"],
+        unitPrice: (row["unit_price"] || row["cost_price"]).to_f,
+        costPrice: (row["cost_price"] || row["unit_price"]).to_f,
+        totalAmount: row["total_amount"].to_f,
+        orderDate: row["order_date"] || row["raised_at"],
+        raisedAt: row["raised_at"] || row["order_date"],
+        expectedDeliveryDate: expected_delivery,
+        expectedAt: row["expected_at"] || expected_delivery,
         status: row["status"],
+        assignedEmployeeId: row["assigned_employee_id"],
+        assignedEmployeeName: row["assigned_employee_name"] || "",
+        notes: row["notes"] || "",
+        isOverdue: overdue == true,
+        isDueSoon: due_soon == true,
         createdAt: row["created_at"]
       }
     end
@@ -471,6 +651,22 @@ class TaskAssignmentAPI < Sinatra::Base
     def require_manager!
       current = require_authentication!
       halt_json(403, error: "Manager access required.") unless current[:user][:role] == "manager"
+      current
+    end
+
+    def require_admin!
+      current = require_authentication!
+      halt_json(403, error: "Admin access required.") unless current[:user][:role] == "admin"
+      current
+    end
+
+    def manager_or_admin?(user)
+      %w[manager admin].include?(user[:role])
+    end
+
+    def require_manager_or_admin!
+      current = require_authentication!
+      halt_json(403, error: "Manager or admin access required.") unless manager_or_admin?(current[:user])
       current
     end
 
@@ -759,7 +955,7 @@ class TaskAssignmentAPI < Sinatra::Base
   end
 
   get "/api/employees" do
-    require_manager!
+    require_manager_or_admin!
 
     employees = db_exec(
       <<~SQL
@@ -775,7 +971,7 @@ class TaskAssignmentAPI < Sinatra::Base
   end
 
   post "/api/employees" do
-    require_manager!
+    require_manager_or_admin!
 
     payload = parse_json_body
     full_name = sanitize_text(payload["name"], "Name", required: true, max_length: 120)
@@ -815,14 +1011,154 @@ class TaskAssignmentAPI < Sinatra::Base
     JSON.generate(employee: serialize_user_row(employee))
   end
 
+  get "/api/admin/users" do
+    require_admin!
+    users = db_exec(
+      <<~SQL
+        SELECT id, email, full_name, phone, role, is_active, created_at, updated_at
+        FROM users
+        ORDER BY created_at DESC
+      SQL
+    ).map { |row| serialize_user_row(row) }
+    JSON.generate(users: users)
+  end
+
+  post "/api/admin/managers" do
+    require_admin!
+    payload = parse_json_body
+    name = sanitize_text(payload["name"], "Manager name", required: true, max_length: 120)
+    email = normalize_email(payload["email"])
+    phone = normalize_phone(payload["phone"])
+    password = payload["password"].to_s.strip
+    generated_password = false
+
+    if email.empty? || !valid_email?(email)
+      halt_json(400, error: "A valid manager email is required.")
+    end
+    if password.empty?
+      password = SecureRandom.alphanumeric(12)
+      generated_password = true
+    end
+    if password.length < 8
+      halt_json(400, error: "Manager password must be at least 8 characters.")
+    end
+
+    duplicate = db_exec("SELECT 1 FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1", [email]).first
+    halt_json(409, error: "A user with this email already exists.") if duplicate
+
+    password_hash = BCrypt::Password.create(password, cost: BCrypt::Engine::DEFAULT_COST)
+    manager = db_exec(
+      <<~SQL,
+        INSERT INTO users (id, email, full_name, phone, role, password_hash, is_active, created_at, updated_at)
+        VALUES (gen_random_uuid(), $1, $2, $3, 'manager', $4, TRUE, NOW(), NOW())
+        RETURNING id, email, full_name, phone, role, is_active, created_at, updated_at
+      SQL
+      [email, name, phone, password_hash]
+    ).first
+
+    JSON.generate(
+      manager: serialize_user_row(manager),
+      credentials: {
+        email: email,
+        password: password,
+        generated: generated_password
+      }
+    )
+  end
+
+  post "/api/admin/users/:user_id/reset-password" do
+    require_admin!
+    payload = parse_json_body
+    password = payload["password"].to_s.strip
+    generated_password = false
+    if password.empty?
+      password = SecureRandom.alphanumeric(12)
+      generated_password = true
+    end
+    if password.length < 8
+      halt_json(400, error: "Password must be at least 8 characters.")
+    end
+
+    user_row = db_exec(
+      "SELECT id, email, full_name, phone, role, is_active, created_at, updated_at FROM users WHERE id = $1 LIMIT 1",
+      [params[:user_id]]
+    ).first
+    halt_json(404, error: "User not found.") unless user_row
+
+    password_hash = BCrypt::Password.create(password, cost: BCrypt::Engine::DEFAULT_COST)
+    db_exec(
+      <<~SQL,
+        UPDATE users
+        SET password_hash = $1,
+            updated_at = NOW()
+        WHERE id = $2
+      SQL
+      [password_hash, params[:user_id]]
+    )
+
+    db_exec(
+      <<~SQL,
+        UPDATE sessions
+        SET revoked_at = NOW(),
+            updated_at = NOW()
+        WHERE user_id = $1
+          AND revoked_at IS NULL
+      SQL
+      [params[:user_id]]
+    )
+
+    JSON.generate(
+      user: serialize_user_row(user_row),
+      credentials: {
+        email: user_row["email"],
+        password: password,
+        generated: generated_password
+      }
+    )
+  end
+
+  post "/api/admin/users/:user_id/account-status" do
+    require_admin!
+    payload = parse_json_body
+    active = parse_boolean(payload["isActive"])
+
+    updated = db_exec(
+      <<~SQL,
+        UPDATE users
+        SET is_active = $1,
+            updated_at = NOW()
+        WHERE id = $2
+        RETURNING id, email, full_name, phone, role, is_active, created_at, updated_at
+      SQL
+      [active, params[:user_id]]
+    ).first
+    halt_json(404, error: "User not found.") unless updated
+
+    if updated["is_active"] == "f"
+      db_exec(
+        <<~SQL,
+          UPDATE sessions
+          SET revoked_at = NOW(),
+              updated_at = NOW()
+          WHERE user_id = $1
+            AND revoked_at IS NULL
+        SQL
+        [params[:user_id]]
+      )
+    end
+
+    JSON.generate(user: serialize_user_row(updated))
+  end
+
   get "/api/workspace" do
     current = require_authentication!
     user = current[:user]
+    privileged_user = manager_or_admin?(user)
 
-    employees = if user[:role] == "manager"
+    employees = if privileged_user
       db_exec(
         <<~SQL
-          SELECT id, email, full_name, phone, role, created_at, updated_at
+          SELECT id, email, full_name, phone, role, is_active, created_at, updated_at
           FROM users
           WHERE role = 'employee'
             AND is_active = TRUE
@@ -832,7 +1168,7 @@ class TaskAssignmentAPI < Sinatra::Base
     else
       db_exec(
         <<~SQL,
-          SELECT id, email, full_name, phone, role, created_at, updated_at
+          SELECT id, email, full_name, phone, role, is_active, created_at, updated_at
           FROM users
           WHERE id = $1
             AND role = 'employee'
@@ -843,30 +1179,17 @@ class TaskAssignmentAPI < Sinatra::Base
       ).map { |row| serialize_user_row(row) }
     end
 
-    task_params = []
     task_filter = ""
-    if user[:role] != "manager"
+    task_params = []
+    unless privileged_user
       task_filter = "WHERE assignee_id = $1"
       task_params = [user[:id]]
     end
     tasks = db_exec(
       <<~SQL,
-        SELECT id,
-               title,
-               description,
-               assignee_id,
-               due_at,
-               urgency,
-               status,
-               reminder_every_minutes,
-               persistent_reminders,
-               next_reminder_at,
-               last_reminder_at,
-               attachments,
-               created_by,
-               created_at,
-               updated_at,
-               completed_at
+        SELECT id, title, description, assignee_id, due_at, urgency, status,
+               reminder_every_minutes, persistent_reminders, next_reminder_at, last_reminder_at,
+               attachments, created_by, created_at, updated_at, completed_at
         FROM tasks
         #{task_filter}
         ORDER BY created_at DESC
@@ -874,9 +1197,9 @@ class TaskAssignmentAPI < Sinatra::Base
       task_params
     ).map { |row| serialize_task_row(row) }
 
-    notification_params = []
     notification_filter = ""
-    if user[:role] != "manager"
+    notification_params = []
+    unless privileged_user
       notification_filter = "WHERE employee_id = $1"
       notification_params = [user[:id]]
     end
@@ -891,9 +1214,9 @@ class TaskAssignmentAPI < Sinatra::Base
       notification_params
     ).map { |row| serialize_notification_row(row) }
 
-    message_params = []
     message_filter = ""
-    if user[:role] != "manager"
+    message_params = []
+    unless privileged_user
       message_filter = "WHERE employee_id = $1"
       message_params = [user[:id]]
     end
@@ -908,51 +1231,119 @@ class TaskAssignmentAPI < Sinatra::Base
       message_params
     ).map { |row| serialize_message_row(row) }
 
-    vendors = []
-    purchase_orders = []
-    vendor_alerts = []
+    vendors = db_exec(
+      <<~SQL
+        SELECT v.id, v.name, v.contact_email, v.contact_phone, v.city, v.status,
+               v.goods, v.default_cost_price, v.created_at, v.updated_at,
+               COALESCE(COUNT(p.id), 0) AS products_supplied
+        FROM vendors v
+        LEFT JOIN products p ON p.vendor_id = v.id
+        GROUP BY v.id
+        ORDER BY v.created_at DESC
+      SQL
+    ).map { |row| serialize_vendor_row(row) }
 
-    if user[:role] == "manager"
-      vendors = db_exec(
-        <<~SQL
-          SELECT id, name, contact_email, goods, default_cost_price, created_at, updated_at
-          FROM vendors
-          ORDER BY created_at DESC
-        SQL
-      ).map { |row| serialize_vendor_row(row) }
+    products = db_exec(
+      <<~SQL
+        SELECT p.id, p.vendor_id, v.name AS vendor_name, p.name, p.item_code,
+               p.quantity, p.category, p.stock_status, p.created_at, p.updated_at
+        FROM products p
+        JOIN vendors v ON v.id = p.vendor_id
+        ORDER BY p.created_at DESC
+      SQL
+    ).map { |row| serialize_product_row(row) }
 
-      purchase_orders = db_exec(
-        <<~SQL
-          SELECT id,
-                 vendor_id,
-                 po_number,
-                 goods,
-                 quantity,
-                 cost_price,
-                 raised_at,
-                 expected_at,
-                 status,
-                 created_at
-          FROM purchase_orders
-          ORDER BY raised_at DESC, created_at DESC
-        SQL
-      ).map { |row| serialize_purchase_order_row(row) }
+    clients = db_exec(
+      <<~SQL
+        SELECT id, name, contact_email, contact_phone, city, status, created_at, updated_at
+        FROM clients
+        ORDER BY created_at DESC
+      SQL
+    ).map { |row| serialize_client_row(row) }
 
-      vendor_alerts = db_exec(
+    orders_filter = ""
+    orders_params = []
+    unless privileged_user
+      orders_filter = "WHERE o.assigned_employee_id = $1"
+      orders_params = [user[:id]]
+    end
+    orders = db_exec(
+      <<~SQL,
+        SELECT o.id, o.order_number, o.client_id, c.name AS client_name,
+               o.product_id, p.name AS product_name, p.item_code, o.quantity, o.due_at,
+               o.delivery_status, o.assigned_employee_id, u.full_name AS assigned_employee_name,
+               o.created_at, o.updated_at
+        FROM orders o
+        JOIN clients c ON c.id = o.client_id
+        JOIN products p ON p.id = o.product_id
+        JOIN users u ON u.id = o.assigned_employee_id
+        #{orders_filter}
+        ORDER BY o.created_at DESC
+      SQL
+      orders_params
+    ).map { |row| serialize_order_row(row) }
+
+    purchase_orders = fetch_purchase_orders(current_user: user)
+    vendor_alerts = if privileged_user
+      db_exec(
         <<~SQL
-          SELECT va.id,
-                 va.vendor_id,
-                 va.po_id,
-                 va.priority,
-                 va.message,
-                 va.created_at,
-                 u.email AS sent_by_email
+          SELECT va.id, va.vendor_id, va.po_id, va.priority, va.message, va.created_at, u.email AS sent_by_email
           FROM vendor_alerts va
           LEFT JOIN users u ON u.id = va.sent_by
           ORDER BY va.created_at DESC
           LIMIT 1000
         SQL
       ).map { |row| serialize_vendor_alert_row(row) }
+    else
+      []
+    end
+    sales_analytics = build_sales_analytics(orders)
+    po_analytics = build_po_analytics(purchase_orders)
+    admin_metrics = if user[:role] == "admin"
+      {
+        employeeCount: employees.length,
+        taskCount: tasks.length,
+        pendingTaskCount: tasks.count { |task| task[:status] != "Completed" },
+        pendingOrderCount: orders.count { |order| %w[Pending Processing].include?(order[:deliveryStatus]) },
+        vendorCount: vendors.length,
+        clientCount: clients.length,
+        productCount: products.length
+      }
+    else
+      nil
+    end
+    activity_logs = if user[:role] == "admin"
+      db_exec(
+        <<~SQL
+          SELECT al.id,
+                 al.actor_user_id,
+                 u.full_name AS actor_name,
+                 al.actor_role,
+                 al.action,
+                 al.entity_type,
+                 al.entity_id,
+                 al.details,
+                 al.created_at
+          FROM activity_logs al
+          LEFT JOIN users u ON u.id = al.actor_user_id
+          ORDER BY al.created_at DESC
+          LIMIT 200
+        SQL
+      ).map do |row|
+        {
+          id: row["id"],
+          actorUserId: row["actor_user_id"],
+          actorName: row["actor_name"] || "",
+          actorRole: row["actor_role"],
+          action: row["action"],
+          entityType: row["entity_type"],
+          entityId: row["entity_id"],
+          details: parse_json_column(row["details"], {}),
+          createdAt: row["created_at"]
+        }
+      end
+    else
+      []
     end
 
     JSON.generate(
@@ -961,13 +1352,20 @@ class TaskAssignmentAPI < Sinatra::Base
       notifications: notifications,
       messages: messages,
       vendors: vendors,
+      products: products,
+      clients: clients,
+      orders: orders,
       purchaseOrders: purchase_orders,
-      vendorAlerts: vendor_alerts
+      vendorAlerts: vendor_alerts,
+      salesAnalytics: sales_analytics,
+      poAnalytics: po_analytics,
+      adminMetrics: admin_metrics,
+      activityLogs: activity_logs
     )
   end
 
   post "/api/tasks" do
-    current = require_manager!
+    current = require_manager_or_admin!
     payload = parse_json_body
 
     title = sanitize_text(payload["title"], "Task title", required: true, max_length: 200)
@@ -1082,12 +1480,64 @@ class TaskAssignmentAPI < Sinatra::Base
     JSON.generate(task: task, whatsappUrl: whatsapp_url)
   end
 
+  put "/api/tasks/:task_id/status" do
+    current = require_authentication!
+    payload = parse_json_body
+    new_status = payload["status"].to_s.strip
+    unless TASK_STATUSES.include?(new_status)
+      halt_json(400, error: "Task status must be one of: #{TASK_STATUSES.join(', ')}.")
+    end
+
+    task = task_row_by_id(params[:task_id])
+    halt_json(404, error: "Task not found.") unless task
+    unless manager_or_admin?(current[:user]) || task["assignee_id"] == current[:user][:id]
+      halt_json(403, error: "You can only update your own tasks.")
+    end
+
+    completed_at = new_status == "Completed" ? Time.now.utc.iso8601 : nil
+    next_reminder_at = if new_status == "Completed"
+      nil
+    else
+      task["next_reminder_at"]
+    end
+
+    updated = db_exec(
+      <<~SQL,
+        UPDATE tasks
+        SET status = $1,
+            completed_at = $2,
+            next_reminder_at = $3,
+            updated_at = NOW()
+        WHERE id = $4
+        RETURNING id,
+                  title,
+                  description,
+                  assignee_id,
+                  due_at,
+                  urgency,
+                  status,
+                  reminder_every_minutes,
+                  persistent_reminders,
+                  next_reminder_at,
+                  last_reminder_at,
+                  attachments,
+                  created_by,
+                  created_at,
+                  updated_at,
+                  completed_at
+      SQL
+      [new_status, completed_at, next_reminder_at, task["id"]]
+    ).first
+
+    JSON.generate(task: serialize_task_row(updated))
+  end
+
   post "/api/tasks/:task_id/complete" do
     current = require_authentication!
     task = task_row_by_id(params[:task_id])
     halt_json(404, error: "Task not found.") unless task
 
-    if current[:user][:role] != "manager" && task["assignee_id"] != current[:user][:id]
+    if !manager_or_admin?(current[:user]) && task["assignee_id"] != current[:user][:id]
       halt_json(403, error: "You can only complete your own tasks.")
     end
 
@@ -1124,7 +1574,7 @@ class TaskAssignmentAPI < Sinatra::Base
       [completed_at, params[:task_id]]
     ).first
 
-    actor = current[:user][:role] == "manager" ? "Manager" : "Employee"
+    actor = manager_or_admin?(current[:user]) ? "Manager/Admin" : "Employee"
     create_notification(
       employee_id: updated["assignee_id"],
       task_id: updated["id"],
@@ -1137,7 +1587,7 @@ class TaskAssignmentAPI < Sinatra::Base
   end
 
   post "/api/tasks/:task_id/reminder" do
-    require_manager!
+    require_manager_or_admin!
     payload = parse_json_body
     source = payload["source"].to_s.strip.downcase
     source = "manual" unless %w[manual automatic].include?(source)
@@ -1261,7 +1711,7 @@ class TaskAssignmentAPI < Sinatra::Base
     end
 
     content = sanitize_text(payload["content"], "Message content", required: true, max_length: MAX_MESSAGE_LENGTH)
-    sender_role = current[:user][:role] == "manager" ? "manager" : "employee"
+    sender_role = manager_or_admin?(current[:user]) ? "manager" : "employee"
 
     message = db_exec(
       <<~SQL,
@@ -1285,17 +1735,405 @@ class TaskAssignmentAPI < Sinatra::Base
     JSON.generate(message: serialize_message_row(message))
   end
 
+  get "/api/vendors" do
+    require_authentication!
+    search = params["search"].to_s.strip.downcase
+    status_filter = params["status"].to_s.strip
+    city_filter = params["city"].to_s.strip.downcase
+    sort = params["sort"].to_s.strip.downcase
+    direction = params["direction"].to_s.strip.downcase == "asc" ? "ASC" : "DESC"
+
+    where_clauses = []
+    sql_params = []
+    if !search.empty?
+      where_clauses << "(LOWER(v.name) LIKE $#{sql_params.length + 1} OR LOWER(v.contact_email) LIKE $#{sql_params.length + 1})"
+      sql_params << "%#{search}%"
+    end
+    if !status_filter.empty? && VENDOR_STATUSES.include?(status_filter)
+      where_clauses << "v.status = $#{sql_params.length + 1}"
+      sql_params << status_filter
+    end
+    if !city_filter.empty?
+      where_clauses << "LOWER(v.city) = $#{sql_params.length + 1}"
+      sql_params << city_filter
+    end
+    where_sql = where_clauses.empty? ? "" : "WHERE #{where_clauses.join(' AND ')}"
+
+    sort_column = case sort
+    when "name" then "LOWER(v.name)"
+    when "city" then "LOWER(v.city)"
+    when "status" then "v.status"
+    when "products" then "products_supplied"
+    else "v.created_at"
+    end
+
+    vendors = db_exec(
+      <<~SQL,
+        SELECT v.id, v.name, v.contact_email, v.contact_phone, v.city, v.status,
+               v.goods, v.default_cost_price, v.created_at, v.updated_at,
+               COALESCE(COUNT(p.id), 0) AS products_supplied
+        FROM vendors v
+        LEFT JOIN products p ON p.vendor_id = v.id
+        #{where_sql}
+        GROUP BY v.id
+        ORDER BY #{sort_column} #{direction}
+      SQL
+      sql_params
+    ).map { |row| serialize_vendor_row(row) }
+
+    JSON.generate(vendors: vendors)
+  end
+
+  get "/api/vendors/:vendor_id" do
+    require_authentication!
+    vendor = db_exec(
+      <<~SQL,
+        SELECT v.id, v.name, v.contact_email, v.contact_phone, v.city, v.status,
+               v.goods, v.default_cost_price, v.created_at, v.updated_at,
+               COALESCE(COUNT(p.id), 0) AS products_supplied
+        FROM vendors v
+        LEFT JOIN products p ON p.vendor_id = v.id
+        WHERE v.id = $1
+        GROUP BY v.id
+        LIMIT 1
+      SQL
+      [params[:vendor_id]]
+    ).first
+    halt_json(404, error: "Vendor not found.") unless vendor
+
+    products = db_exec(
+      <<~SQL,
+        SELECT p.id, p.vendor_id, v.name AS vendor_name, p.name, p.item_code,
+               p.quantity, p.category, p.stock_status, p.created_at, p.updated_at
+        FROM products p
+        JOIN vendors v ON v.id = p.vendor_id
+        WHERE p.vendor_id = $1
+        ORDER BY p.created_at DESC
+      SQL
+      [params[:vendor_id]]
+    ).map { |row| serialize_product_row(row) }
+
+    JSON.generate(vendor: serialize_vendor_row(vendor), products: products)
+  end
+
+  get "/api/products" do
+    require_authentication!
+    search = params["search"].to_s.strip.downcase
+    stock_status = params["stockStatus"].to_s.strip
+    category = params["category"].to_s.strip.downcase
+    vendor_id = params["vendorId"].to_s.strip
+    sort = params["sort"].to_s.strip.downcase
+    direction = params["direction"].to_s.strip.downcase == "asc" ? "ASC" : "DESC"
+
+    where_clauses = []
+    sql_params = []
+    if !search.empty?
+      where_clauses << "(LOWER(p.name) LIKE $#{sql_params.length + 1} OR LOWER(p.item_code) LIKE $#{sql_params.length + 1})"
+      sql_params << "%#{search}%"
+    end
+    if !stock_status.empty? && STOCK_STATUSES.include?(stock_status)
+      where_clauses << "p.stock_status = $#{sql_params.length + 1}"
+      sql_params << stock_status
+    end
+    if !category.empty?
+      where_clauses << "LOWER(p.category) = $#{sql_params.length + 1}"
+      sql_params << category
+    end
+    unless vendor_id.empty?
+      where_clauses << "p.vendor_id = $#{sql_params.length + 1}"
+      sql_params << vendor_id
+    end
+    where_sql = where_clauses.empty? ? "" : "WHERE #{where_clauses.join(' AND ')}"
+
+    sort_column = case sort
+    when "name" then "LOWER(p.name)"
+    when "quantity" then "p.quantity"
+    when "category" then "LOWER(p.category)"
+    when "stockstatus" then "p.stock_status"
+    else "p.created_at"
+    end
+
+    products = db_exec(
+      <<~SQL,
+        SELECT p.id, p.vendor_id, v.name AS vendor_name, p.name, p.item_code,
+               p.quantity, p.category, p.stock_status, p.created_at, p.updated_at
+        FROM products p
+        JOIN vendors v ON v.id = p.vendor_id
+        #{where_sql}
+        ORDER BY #{sort_column} #{direction}
+      SQL
+      sql_params
+    ).map { |row| serialize_product_row(row) }
+
+    JSON.generate(products: products)
+  end
+
+  post "/api/products" do
+    current = require_manager_or_admin!
+    payload = parse_json_body
+
+    vendor_id = payload["vendorId"].to_s.strip
+    halt_json(400, error: "Vendor is required.") if vendor_id.empty?
+    vendor = db_exec("SELECT id FROM vendors WHERE id = $1 LIMIT 1", [vendor_id]).first
+    halt_json(400, error: "Selected vendor does not exist.") unless vendor
+
+    name = sanitize_text(payload["name"], "Product name", required: true, max_length: 200)
+    item_code = sanitize_text(payload["itemCode"], "Item code", required: true, max_length: 80)
+    quantity = parse_positive_integer(payload["quantity"], "Product quantity", min: 0, max: 10_000_000, default: 0)
+    category = sanitize_text(payload["category"], "Product category", required: false, max_length: 120)
+    stock_status = payload["stockStatus"].to_s.strip
+    stock_status = "In Stock" if stock_status.empty?
+    unless STOCK_STATUSES.include?(stock_status)
+      halt_json(400, error: "Stock status must be one of: #{STOCK_STATUSES.join(', ')}.")
+    end
+
+    duplicate = db_exec("SELECT 1 FROM products WHERE LOWER(item_code) = LOWER($1) LIMIT 1", [item_code]).first
+    halt_json(409, error: "A product with that item code already exists.") if duplicate
+
+    product = db_exec(
+      <<~SQL,
+        INSERT INTO products (id, vendor_id, name, item_code, quantity, category, stock_status, created_by, created_at, updated_at)
+        VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
+        RETURNING id, vendor_id, name, item_code, quantity, category, stock_status, created_at, updated_at
+      SQL
+      [vendor_id, name, item_code, quantity, category, stock_status, current[:user][:id]]
+    ).first
+
+    payload_row = product.to_h
+    payload_row["vendor_name"] = db_exec("SELECT name FROM vendors WHERE id = $1 LIMIT 1", [vendor_id]).first&.dig("name")
+    JSON.generate(product: serialize_product_row(payload_row))
+  end
+
+  get "/api/clients" do
+    require_authentication!
+    search = params["search"].to_s.strip.downcase
+    status_filter = params["status"].to_s.strip
+    city = params["city"].to_s.strip.downcase
+
+    where_clauses = []
+    sql_params = []
+    if !search.empty?
+      where_clauses << "(LOWER(name) LIKE $#{sql_params.length + 1} OR LOWER(contact_email) LIKE $#{sql_params.length + 1})"
+      sql_params << "%#{search}%"
+    end
+    if !status_filter.empty? && VENDOR_STATUSES.include?(status_filter)
+      where_clauses << "status = $#{sql_params.length + 1}"
+      sql_params << status_filter
+    end
+    if !city.empty?
+      where_clauses << "LOWER(city) = $#{sql_params.length + 1}"
+      sql_params << city
+    end
+    where_sql = where_clauses.empty? ? "" : "WHERE #{where_clauses.join(' AND ')}"
+
+    clients = db_exec(
+      <<~SQL,
+        SELECT id, name, contact_email, contact_phone, city, status, created_at, updated_at
+        FROM clients
+        #{where_sql}
+        ORDER BY created_at DESC
+      SQL
+      sql_params
+    ).map { |row| serialize_client_row(row) }
+
+    JSON.generate(clients: clients)
+  end
+
+  post "/api/clients" do
+    current = require_manager_or_admin!
+    payload = parse_json_body
+    name = sanitize_text(payload["name"], "Client name", required: true, max_length: 200)
+    contact_email = normalize_email(payload["contactEmail"])
+    contact_phone = normalize_phone(payload["contactPhone"])
+    city = sanitize_text(payload["city"], "Client city", required: false, max_length: 120)
+    status = payload["status"].to_s.strip
+    status = "Active" if status.empty?
+    unless VENDOR_STATUSES.include?(status)
+      halt_json(400, error: "Client status must be one of: #{VENDOR_STATUSES.join(', ')}.")
+    end
+    if !contact_email.empty? && !valid_email?(contact_email)
+      halt_json(400, error: "Client contact email is invalid.")
+    end
+
+    duplicate = db_exec("SELECT 1 FROM clients WHERE LOWER(name) = LOWER($1) LIMIT 1", [name]).first
+    halt_json(409, error: "A client with that name already exists.") if duplicate
+
+    client = db_exec(
+      <<~SQL,
+        INSERT INTO clients (id, name, contact_email, contact_phone, city, status, created_by, created_at, updated_at)
+        VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, NOW(), NOW())
+        RETURNING id, name, contact_email, contact_phone, city, status, created_at, updated_at
+      SQL
+      [name, contact_email, contact_phone, city, status, current[:user][:id]]
+    ).first
+
+    JSON.generate(client: serialize_client_row(client))
+  end
+
+  get "/api/orders" do
+    current = require_authentication!
+    privileged_user = manager_or_admin?(current[:user])
+    status_filter = params["status"].to_s.strip
+    assigned_employee_id = params["assignedEmployeeId"].to_s.strip
+    search = params["search"].to_s.strip.downcase
+
+    where_clauses = []
+    sql_params = []
+    unless privileged_user
+      where_clauses << "o.assigned_employee_id = $#{sql_params.length + 1}"
+      sql_params << current[:user][:id]
+    end
+    if !status_filter.empty? && ORDER_STATUSES.include?(status_filter)
+      where_clauses << "o.delivery_status = $#{sql_params.length + 1}"
+      sql_params << status_filter
+    end
+    if privileged_user && !assigned_employee_id.empty?
+      where_clauses << "o.assigned_employee_id = $#{sql_params.length + 1}"
+      sql_params << assigned_employee_id
+    end
+    if !search.empty?
+      where_clauses << "(LOWER(o.order_number) LIKE $#{sql_params.length + 1} OR LOWER(c.name) LIKE $#{sql_params.length + 1} OR LOWER(p.item_code) LIKE $#{sql_params.length + 1})"
+      sql_params << "%#{search}%"
+    end
+    where_sql = where_clauses.empty? ? "" : "WHERE #{where_clauses.join(' AND ')}"
+
+    orders = db_exec(
+      <<~SQL,
+        SELECT o.id, o.order_number, o.client_id, c.name AS client_name,
+               o.product_id, p.name AS product_name, p.item_code, o.quantity, o.due_at,
+               o.delivery_status, o.assigned_employee_id, u.full_name AS assigned_employee_name,
+               o.created_at, o.updated_at
+        FROM orders o
+        JOIN clients c ON c.id = o.client_id
+        JOIN products p ON p.id = o.product_id
+        JOIN users u ON u.id = o.assigned_employee_id
+        #{where_sql}
+        ORDER BY o.due_at ASC, o.created_at DESC
+      SQL
+      sql_params
+    ).map { |row| serialize_order_row(row) }
+
+    JSON.generate(orders: orders)
+  end
+
+  post "/api/orders" do
+    current = require_manager_or_admin!
+    payload = parse_json_body
+
+    order_id = sanitize_text(payload["orderId"], "Order ID", required: true, max_length: 80)
+    client_id = payload["clientId"].to_s.strip
+    product_id = payload["productId"].to_s.strip
+    assigned_employee_id = payload["assignedEmployeeId"].to_s.strip
+    quantity = parse_positive_integer(payload["quantity"], "Order quantity", min: 1, max: 10_000_000)
+    due_date = parse_timestamp(payload["dueDate"], "Order due date")
+    delivery_status = payload["deliveryStatus"].to_s.strip
+    delivery_status = "Pending" if delivery_status.empty?
+    unless ORDER_STATUSES.include?(delivery_status)
+      halt_json(400, error: "Order status must be one of: #{ORDER_STATUSES.join(', ')}.")
+    end
+    halt_json(400, error: "Client is required.") if client_id.empty?
+    halt_json(400, error: "Product is required.") if product_id.empty?
+    halt_json(400, error: "Assigned employee is required.") if assigned_employee_id.empty?
+
+    client = db_exec("SELECT id FROM clients WHERE id = $1 LIMIT 1", [client_id]).first
+    halt_json(400, error: "Client does not exist.") unless client
+    product = db_exec("SELECT id FROM products WHERE id = $1 LIMIT 1", [product_id]).first
+    halt_json(400, error: "Product does not exist.") unless product
+    employee = db_exec("SELECT id FROM users WHERE id = $1 AND role = 'employee' AND is_active = TRUE LIMIT 1", [assigned_employee_id]).first
+    halt_json(400, error: "Assigned employee does not exist.") unless employee
+
+    duplicate = db_exec("SELECT 1 FROM orders WHERE LOWER(order_number) = LOWER($1) LIMIT 1", [order_id]).first
+    halt_json(409, error: "Order ID already exists.") if duplicate
+
+    created = db_exec(
+      <<~SQL,
+        INSERT INTO orders (id, order_number, client_id, product_id, quantity, due_at, delivery_status, assigned_employee_id, created_by, created_at, updated_at)
+        VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
+        RETURNING id
+      SQL
+      [order_id, client_id, product_id, quantity, due_date, delivery_status, assigned_employee_id, current[:user][:id]]
+    ).first
+
+    order = db_exec(
+      <<~SQL,
+        SELECT o.id, o.order_number, o.client_id, c.name AS client_name,
+               o.product_id, p.name AS product_name, p.item_code, o.quantity, o.due_at,
+               o.delivery_status, o.assigned_employee_id, u.full_name AS assigned_employee_name,
+               o.created_at, o.updated_at
+        FROM orders o
+        JOIN clients c ON c.id = o.client_id
+        JOIN products p ON p.id = o.product_id
+        JOIN users u ON u.id = o.assigned_employee_id
+        WHERE o.id = $1
+        LIMIT 1
+      SQL
+      [created["id"]]
+    ).first
+
+    JSON.generate(order: serialize_order_row(order))
+  end
+
+  put "/api/orders/:order_id/status" do
+    current = require_authentication!
+    payload = parse_json_body
+    status = payload["deliveryStatus"].to_s.strip
+    unless ORDER_STATUSES.include?(status)
+      halt_json(400, error: "Order status must be one of: #{ORDER_STATUSES.join(', ')}.")
+    end
+
+    order = db_exec("SELECT id, assigned_employee_id FROM orders WHERE id = $1 LIMIT 1", [params[:order_id]]).first
+    halt_json(404, error: "Order not found.") unless order
+    unless manager_or_admin?(current[:user]) || order["assigned_employee_id"] == current[:user][:id]
+      halt_json(403, error: "You can only update your own assigned orders.")
+    end
+
+    db_exec(
+      <<~SQL,
+        UPDATE orders
+        SET delivery_status = $1,
+            updated_at = NOW()
+        WHERE id = $2
+      SQL
+      [status, params[:order_id]]
+    )
+
+    updated = db_exec(
+      <<~SQL,
+        SELECT o.id, o.order_number, o.client_id, c.name AS client_name,
+               o.product_id, p.name AS product_name, p.item_code, o.quantity, o.due_at,
+               o.delivery_status, o.assigned_employee_id, u.full_name AS assigned_employee_name,
+               o.created_at, o.updated_at
+        FROM orders o
+        JOIN clients c ON c.id = o.client_id
+        JOIN products p ON p.id = o.product_id
+        JOIN users u ON u.id = o.assigned_employee_id
+        WHERE o.id = $1
+        LIMIT 1
+      SQL
+      [params[:order_id]]
+    ).first
+
+    JSON.generate(order: serialize_order_row(updated))
+  end
+
   post "/api/vendors" do
-    current = require_manager!
+    current = require_manager_or_admin!
     payload = parse_json_body
 
     name = sanitize_text(payload["name"], "Vendor name", required: true, max_length: 200)
     contact_email = normalize_email(payload["contactEmail"])
+    contact_phone = normalize_phone(payload["contactPhone"])
+    city = sanitize_text(payload["city"], "Vendor city", required: false, max_length: 120)
+    status = payload["status"].to_s.strip
+    status = "Active" if status.empty?
     goods = sanitize_goods_list(payload["goods"])
     default_cost_price = parse_non_negative_decimal(payload["defaultCostPrice"], "Default cost price", default: 0.0)
 
     if !contact_email.empty? && !valid_email?(contact_email)
       halt_json(400, error: "Vendor contact email is invalid.")
+    end
+    unless VENDOR_STATUSES.include?(status)
+      halt_json(400, error: "Vendor status must be one of: #{VENDOR_STATUSES.join(', ')}.")
     end
 
     duplicate = db_exec(
@@ -1308,78 +2146,340 @@ class TaskAssignmentAPI < Sinatra::Base
 
     vendor = db_exec(
       <<~SQL,
-        INSERT INTO vendors (id, name, contact_email, goods, default_cost_price, created_by, created_at, updated_at)
-        VALUES (gen_random_uuid(), $1, $2, $3::jsonb, $4, $5, NOW(), NOW())
-        RETURNING id, name, contact_email, goods, default_cost_price, created_at, updated_at
+        INSERT INTO vendors (id, name, contact_email, contact_phone, city, status, goods, default_cost_price, created_by, created_at, updated_at)
+        VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6::jsonb, $7, $8, NOW(), NOW())
+        RETURNING id, name, contact_email, contact_phone, city, status, goods, default_cost_price, created_at, updated_at
       SQL
-      [name, contact_email, JSON.generate(goods), default_cost_price, current[:user][:id]]
+      [name, contact_email, contact_phone, city, status, JSON.generate(goods), default_cost_price, current[:user][:id]]
     ).first
 
     JSON.generate(vendor: serialize_vendor_row(vendor))
   end
 
+  get "/api/purchase-orders" do
+    current = require_authentication!
+    user = current[:user]
+    status_filter = params["status"].to_s.strip
+    assignee_filter = params["assignedEmployeeId"].to_s.strip
+    search = params["search"].to_s.strip.downcase
+    overdue_only = parse_boolean(params["overdueOnly"])
+    sort = params["sort"].to_s.strip.downcase
+    direction = TaskAssignmentAPI.sanitize_sort_direction(params["direction"])
+
+    where_clauses = []
+    sql_params = []
+    unless manager_or_admin?(user)
+      where_clauses << "po.assigned_employee_id = $#{sql_params.length + 1}"
+      sql_params << user[:id]
+    end
+    if !status_filter.empty? && PO_STATUSES.include?(status_filter)
+      where_clauses << "po.status = $#{sql_params.length + 1}"
+      sql_params << status_filter
+    end
+    if manager_or_admin?(user) && !assignee_filter.empty?
+      where_clauses << "po.assigned_employee_id = $#{sql_params.length + 1}"
+      sql_params << assignee_filter
+    end
+    unless search.empty?
+      where_clauses << "(LOWER(po.po_number) LIKE $#{sql_params.length + 1} OR LOWER(COALESCE(po.product_name, po.goods, '')) LIKE $#{sql_params.length + 1} OR LOWER(COALESCE(po.item_code, '')) LIKE $#{sql_params.length + 1})"
+      sql_params << "%#{search}%"
+    end
+    if overdue_only
+      where_clauses << "COALESCE(po.expected_delivery_date, po.expected_at) IS NOT NULL"
+      where_clauses << "COALESCE(po.expected_delivery_date, po.expected_at) < NOW()"
+      where_clauses << "po.status NOT IN ('Delivered', 'Cancelled')"
+    end
+    where_sql = where_clauses.empty? ? "" : "WHERE #{where_clauses.join(' AND ')}"
+    sort_column = case sort
+    when "status" then "po.status"
+    when "expecteddeliverydate" then "COALESCE(po.expected_delivery_date, po.expected_at)"
+    when "orderdate" then "COALESCE(po.order_date, po.raised_at)"
+    when "totalamount" then "COALESCE(po.total_amount, (po.quantity * COALESCE(po.unit_price, po.cost_price, 0)))"
+    else "po.created_at"
+    end
+    purchase_orders = db_exec(
+      <<~SQL,
+        SELECT po.id,
+               po.vendor_id,
+               v.name AS vendor_name,
+               po.po_number,
+               po.product_name,
+               po.item_code,
+               po.goods,
+               po.quantity,
+               po.unit_price,
+               po.cost_price,
+               po.total_amount,
+               po.order_date,
+               po.raised_at,
+               po.expected_delivery_date,
+               po.expected_at,
+               po.status,
+               po.assigned_employee_id,
+               u.full_name AS assigned_employee_name,
+               po.notes,
+               po.created_at
+        FROM purchase_orders po
+        JOIN vendors v ON v.id = po.vendor_id
+        LEFT JOIN users u ON u.id = po.assigned_employee_id
+        #{where_sql}
+        ORDER BY #{sort_column} #{direction}, po.created_at DESC
+      SQL
+      sql_params
+    ).map { |row| serialize_purchase_order_row(row) }
+
+    JSON.generate(purchaseOrders: purchase_orders, poAnalytics: build_po_analytics(purchase_orders))
+  end
+
+  get "/api/purchase-orders/:po_id" do
+    current = require_authentication!
+    user = current[:user]
+    purchase_order = db_exec(
+      <<~SQL,
+        SELECT po.id,
+               po.vendor_id,
+               v.name AS vendor_name,
+               po.po_number,
+               po.product_name,
+               po.item_code,
+               po.goods,
+               po.quantity,
+               po.unit_price,
+               po.cost_price,
+               po.total_amount,
+               po.order_date,
+               po.raised_at,
+               po.expected_delivery_date,
+               po.expected_at,
+               po.status,
+               po.assigned_employee_id,
+               u.full_name AS assigned_employee_name,
+               po.notes,
+               po.created_at
+        FROM purchase_orders po
+        JOIN vendors v ON v.id = po.vendor_id
+        LEFT JOIN users u ON u.id = po.assigned_employee_id
+        WHERE po.id = $1
+        LIMIT 1
+      SQL
+      [params[:po_id]]
+    ).first
+    halt_json(404, error: "Purchase order not found.") unless purchase_order
+
+    unless manager_or_admin?(user) || purchase_order["assigned_employee_id"] == user[:id]
+      halt_json(403, error: "You can only access your assigned purchase orders.")
+    end
+
+    related_orders = db_exec(
+      <<~SQL,
+        SELECT o.id, o.order_number, o.client_id, c.name AS client_name,
+               o.product_id, p.name AS product_name, p.item_code, o.quantity, o.due_at,
+               o.delivery_status, o.assigned_employee_id, u.full_name AS assigned_employee_name,
+               o.created_at, o.updated_at
+        FROM orders o
+        JOIN clients c ON c.id = o.client_id
+        JOIN products p ON p.id = o.product_id
+        JOIN users u ON u.id = o.assigned_employee_id
+        WHERE LOWER(p.item_code) = LOWER($1)
+        ORDER BY o.created_at DESC
+        LIMIT 50
+      SQL
+      [purchase_order["item_code"].to_s]
+    ).map { |row| serialize_order_row(row) }
+
+    timeline = if user[:role] == "admin"
+      db_exec(
+        <<~SQL,
+          SELECT al.id, al.actor_user_id, u.full_name AS actor_name, al.actor_role,
+                 al.action, al.entity_type, al.entity_id, al.details, al.created_at
+          FROM activity_logs al
+          LEFT JOIN users u ON u.id = al.actor_user_id
+          WHERE al.entity_type = 'purchase_order'
+            AND al.entity_id = $1
+          ORDER BY al.created_at DESC
+          LIMIT 100
+        SQL
+        [params[:po_id]]
+      ).map do |row|
+        {
+          id: row["id"],
+          actorUserId: row["actor_user_id"],
+          actorName: row["actor_name"] || "",
+          actorRole: row["actor_role"],
+          action: row["action"],
+          entityType: row["entity_type"],
+          entityId: row["entity_id"],
+          details: parse_json_column(row["details"], {}),
+          createdAt: row["created_at"]
+        }
+      end
+    else
+      []
+    end
+
+    JSON.generate(
+      purchaseOrder: serialize_purchase_order_row(purchase_order),
+      relatedSalesOrders: related_orders,
+      timeline: timeline
+    )
+  end
+
   post "/api/purchase-orders" do
-    current = require_manager!
+    current = require_authentication!
+    user = current[:user]
     payload = parse_json_body
 
     vendor_id = payload["vendorId"].to_s.strip
     halt_json(400, error: "Vendor is required.") if vendor_id.empty?
-    vendor_exists = db_exec(
-      "SELECT 1 FROM vendors WHERE id = $1 LIMIT 1",
-      [vendor_id]
-    ).first
+    vendor_exists = db_exec("SELECT 1 FROM vendors WHERE id = $1 LIMIT 1", [vendor_id]).first
     halt_json(400, error: "Selected vendor does not exist.") unless vendor_exists
 
     po_number = sanitize_text(payload["poNumber"], "PO number", required: true, max_length: 100)
-    goods = sanitize_text(payload["goods"], "PO goods", required: true, max_length: 300)
+    product_name = sanitize_text(payload["productName"], "Product name", required: true, max_length: 200)
+    item_code = sanitize_text(payload["itemCode"], "Item code", required: true, max_length: 80)
+    goods = sanitize_text(payload["goods"], "PO goods", required: false, max_length: 300)
     quantity = parse_positive_integer(payload["quantity"], "PO quantity", min: 1, max: 1_000_000, default: 1)
-    cost_price = parse_non_negative_decimal(payload["costPrice"], "PO cost price")
-    raised_at = parse_timestamp(payload["raisedAt"], "PO raised date")
-    expected_at = parse_timestamp(payload["expectedAt"], "PO expected date", required: false)
-
+    unit_price = parse_non_negative_decimal(payload["unitPrice"], "PO unit price")
+    total_amount = parse_non_negative_decimal(payload["totalAmount"], "PO total amount", default: (quantity * unit_price).round(2))
+    order_date = parse_timestamp(payload["orderDate"], "PO order date")
+    expected_delivery_date = parse_timestamp(payload["expectedDeliveryDate"], "PO expected delivery date")
     status = payload["status"].to_s.strip
-    status = "Open" if status.empty?
+    status = "Draft" if status.empty?
     unless PO_STATUSES.include?(status)
       halt_json(400, error: "PO status must be one of: #{PO_STATUSES.join(', ')}.")
     end
+    assigned_employee_id = payload["assignedEmployeeId"].to_s.strip
+    assigned_employee_id = user[:id] if assigned_employee_id.empty? && user[:role] == "employee"
+    notes = sanitize_text(payload["notes"], "PO notes", required: false, max_length: 2000)
 
-    duplicate = db_exec(
-      "SELECT 1 FROM purchase_orders WHERE LOWER(po_number) = LOWER($1) LIMIT 1",
-      [po_number]
-    ).first
-    if duplicate
-      halt_json(409, error: "That PO number already exists.")
+    if user[:role] == "employee"
+      if status != "Draft"
+        halt_json(403, error: "Employees can only create draft purchase orders.")
+      end
+      assigned_employee_id = user[:id]
+    elsif !assigned_employee_id.empty?
+      employee_exists = db_exec(
+        "SELECT 1 FROM users WHERE id = $1 AND role = 'employee' AND is_active = TRUE LIMIT 1",
+        [assigned_employee_id]
+      ).first
+      halt_json(400, error: "Assigned employee does not exist.") unless employee_exists
     end
+
+    duplicate = db_exec("SELECT 1 FROM purchase_orders WHERE LOWER(po_number) = LOWER($1) LIMIT 1", [po_number]).first
+    halt_json(409, error: "That PO number already exists.") if duplicate
 
     purchase_order = db_exec(
       <<~SQL,
         INSERT INTO purchase_orders (
-          id, vendor_id, po_number, goods, quantity, cost_price,
-          raised_at, expected_at, status, created_by, created_at
+          id, vendor_id, po_number, product_name, item_code, goods, quantity,
+          unit_price, cost_price, total_amount, order_date, raised_at,
+          expected_delivery_date, expected_at, status, assigned_employee_id, notes, created_by, created_at, updated_at
         )
         VALUES (
-          gen_random_uuid(), $1, $2, $3, $4, $5,
-          $6, $7, $8, $9, NOW()
+          gen_random_uuid(), $1, $2, $3, $4, $5, $6,
+          $7, $8, $9, $10, $10,
+          $11, $11, $12, $13, $14, $15, NOW(), NOW()
         )
         RETURNING id,
                   vendor_id,
                   po_number,
+                  product_name,
+                  item_code,
                   goods,
                   quantity,
+                  unit_price,
                   cost_price,
+                  total_amount,
+                  order_date,
                   raised_at,
+                  expected_delivery_date,
                   expected_at,
                   status,
+                  assigned_employee_id,
+                  notes,
                   created_at
       SQL
-      [vendor_id, po_number, goods, quantity, cost_price, raised_at, expected_at, status, current[:user][:id]]
+      [
+        vendor_id, po_number, product_name, item_code, goods, quantity,
+        unit_price, unit_price, total_amount, order_date, expected_delivery_date,
+        status, assigned_employee_id, notes, user[:id]
+      ]
     ).first
+
+    create_activity_log(
+      actor: user,
+      action: "purchase_order.created",
+      entity_type: "purchase_order",
+      entity_id: purchase_order["id"],
+      details: { poNumber: po_number, status: status, vendorId: vendor_id }
+    )
 
     JSON.generate(purchaseOrder: serialize_purchase_order_row(purchase_order))
   end
 
+  put "/api/purchase-orders/:po_id/status" do
+    current = require_authentication!
+    user = current[:user]
+    payload = parse_json_body
+    new_status = payload["status"].to_s.strip
+    unless PO_STATUSES.include?(new_status)
+      halt_json(400, error: "PO status must be one of: #{PO_STATUSES.join(', ')}.")
+    end
+
+    purchase_order = db_exec(
+      "SELECT id, status, assigned_employee_id FROM purchase_orders WHERE id = $1 LIMIT 1",
+      [params[:po_id]]
+    ).first
+    halt_json(404, error: "Purchase order not found.") unless purchase_order
+
+    unless manager_or_admin?(user) || purchase_order["assigned_employee_id"] == user[:id]
+      halt_json(403, error: "You can only update your assigned purchase orders.")
+    end
+    if user[:role] == "employee" && !%w[Draft Approved Cancelled].include?(new_status)
+      halt_json(403, error: "Employees can only set Draft, Approved, or Cancelled status.")
+    end
+
+    updated = db_exec(
+      <<~SQL,
+        UPDATE purchase_orders
+        SET status = $1,
+            updated_at = NOW()
+        WHERE id = $2
+        RETURNING id,
+                  vendor_id,
+                  po_number,
+                  product_name,
+                  item_code,
+                  goods,
+                  quantity,
+                  unit_price,
+                  cost_price,
+                  total_amount,
+                  order_date,
+                  raised_at,
+                  expected_delivery_date,
+                  expected_at,
+                  status,
+                  assigned_employee_id,
+                  notes,
+                  created_at
+      SQL
+      [new_status, params[:po_id]]
+    ).first
+
+    create_activity_log(
+      actor: user,
+      action: "purchase_order.status_updated",
+      entity_type: "purchase_order",
+      entity_id: updated["id"],
+      details: { fromStatus: purchase_order["status"], toStatus: new_status }
+    )
+
+    JSON.generate(purchaseOrder: serialize_purchase_order_row(updated))
+  end
+
   post "/api/vendor-alerts" do
-    current = require_manager!
+    current = require_manager_or_admin!
     payload = parse_json_body
 
     vendor_id = payload["vendorId"].to_s.strip

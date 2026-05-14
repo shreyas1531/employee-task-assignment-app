@@ -1,2537 +1,859 @@
-const STORAGE_KEY = "employee_task_assignment_v1";
 const API_BASE_URL = resolveApiBaseUrl();
-const MAX_ATTACHMENT_COUNT = 5;
-const MAX_ATTACHMENT_BYTES = 1 * 1024 * 1024;
-const MAX_TOTAL_ATTACHMENT_BYTES = 4 * 1024 * 1024;
-
-function resolveApiBaseUrl() {
-  const configured = typeof window.TASK_APP_API_BASE_URL === "string"
-    ? window.TASK_APP_API_BASE_URL.trim()
-    : "";
-  if (configured.length > 0) {
-    return configured.replace(/\/$/, "");
-  }
-  if (window.location.protocol === "file:") {
-    return "http://localhost:4567/api";
-  }
-  return "/api";
-}
-
-const URGENCY_WEIGHT = {
-  Low: 1,
-  Medium: 2,
-  High: 3,
-  Critical: 4
-};
-
-const WEEK_DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-
-const DEFAULT_STATE = {
+const APP_STATE = {
   session: null,
-  employees: [],
-  tasks: [],
-  notifications: [],
-  messages: [],
-  vendors: [],
-  purchaseOrders: [],
-  vendorAlerts: [],
-  settings: {
-    activeRole: "manager",
-    selectedEmployeeId: null,
-    managerMessageEmployeeId: null,
-    calendarMonthOffset: 0,
-    calendarSelectedDate: null,
-    autoOpenWhatsApp: false
-  }
+  workspace: {
+    employees: [],
+    tasks: [],
+    vendors: [],
+    products: [],
+    clients: [],
+    orders: [],
+    purchaseOrders: [],
+    salesAnalytics: {},
+    poAnalytics: {},
+    adminMetrics: null,
+    activityLogs: [],
+    users: []
+  },
+  page: "tasks"
 };
 
-const elements = {
+const el = {
   loginPanel: document.getElementById("loginPanel"),
+  workspaceShell: document.getElementById("workspaceShell"),
   loginForm: document.getElementById("loginForm"),
   loginEmail: document.getElementById("loginEmail"),
   loginPassword: document.getElementById("loginPassword"),
-  workspaceShell: document.getElementById("workspaceShell"),
-  sessionInfo: document.getElementById("sessionInfo"),
-  sessionLabel: document.getElementById("sessionLabel"),
   logoutBtn: document.getElementById("logoutBtn"),
-
-  managerViewBtn: document.getElementById("managerViewBtn"),
-  employeeViewBtn: document.getElementById("employeeViewBtn"),
-  vendorViewBtn: document.getElementById("vendorViewBtn"),
-  managerPanel: document.getElementById("managerPanel"),
-  employeePanel: document.getElementById("employeePanel"),
-  vendorPanel: document.getElementById("vendorPanel"),
-
+  sessionLabel: document.getElementById("sessionLabel"),
+  navList: document.getElementById("navList"),
+  pageTitle: document.getElementById("pageTitle"),
+  toastContainer: document.getElementById("toastContainer"),
+  pages: {
+    tasks: document.getElementById("tasksPage"),
+    vendors: document.getElementById("vendorsPage"),
+    sales: document.getElementById("salesPage"),
+    po: document.getElementById("poPage"),
+    admin: document.getElementById("adminPage")
+  },
   employeeForm: document.getElementById("employeeForm"),
   employeeName: document.getElementById("employeeName"),
   employeeEmail: document.getElementById("employeeEmail"),
   employeePassword: document.getElementById("employeePassword"),
   employeePhone: document.getElementById("employeePhone"),
-  employeeList: document.getElementById("employeeList"),
-
   taskForm: document.getElementById("taskForm"),
   taskTitle: document.getElementById("taskTitle"),
-  taskDescription: document.getElementById("taskDescription"),
   taskAssignee: document.getElementById("taskAssignee"),
+  taskDescription: document.getElementById("taskDescription"),
   taskDueAt: document.getElementById("taskDueAt"),
   taskUrgency: document.getElementById("taskUrgency"),
   taskReminderMinutes: document.getElementById("taskReminderMinutes"),
   taskPersistentReminders: document.getElementById("taskPersistentReminders"),
-  requestNotificationPermission: document.getElementById("requestNotificationPermission"),
-  attachmentDropzone: document.getElementById("attachmentDropzone"),
-  taskAttachmentInput: document.getElementById("taskAttachmentInput"),
-  draftAttachmentList: document.getElementById("draftAttachmentList"),
-  autoOpenWhatsApp: document.getElementById("autoOpenWhatsApp"),
-
-  managerTaskList: document.getElementById("managerTaskList"),
-  urgencySummary: document.getElementById("urgencySummary"),
-  employeeAnalyticsList: document.getElementById("employeeAnalyticsList"),
-
-  managerMessageForm: document.getElementById("managerMessageForm"),
-  managerMessageEmployeeSelect: document.getElementById("managerMessageEmployeeSelect"),
-  managerMessageTaskSelect: document.getElementById("managerMessageTaskSelect"),
-  managerMessageInput: document.getElementById("managerMessageInput"),
-  managerConversation: document.getElementById("managerConversation"),
-
-  employeeSelectDashboard: document.getElementById("employeeSelectDashboard"),
-  employeeTaskList: document.getElementById("employeeTaskList"),
-  employeeNotifications: document.getElementById("employeeNotifications"),
-  employeeMessageForm: document.getElementById("employeeMessageForm"),
-  employeeMessageTaskSelect: document.getElementById("employeeMessageTaskSelect"),
-  employeeMessageInput: document.getElementById("employeeMessageInput"),
-  employeeConversation: document.getElementById("employeeConversation"),
-
-  calendarPrevBtn: document.getElementById("calendarPrevBtn"),
-  calendarNextBtn: document.getElementById("calendarNextBtn"),
-  calendarMonthLabel: document.getElementById("calendarMonthLabel"),
-  calendarGrid: document.getElementById("calendarGrid"),
-  calendarDayDetails: document.getElementById("calendarDayDetails"),
-
+  taskSearch: document.getElementById("taskSearch"),
+  taskList: document.getElementById("taskList"),
   vendorForm: document.getElementById("vendorForm"),
   vendorName: document.getElementById("vendorName"),
   vendorContactEmail: document.getElementById("vendorContactEmail"),
+  vendorContactPhone: document.getElementById("vendorContactPhone"),
+  vendorCity: document.getElementById("vendorCity"),
+  vendorStatus: document.getElementById("vendorStatus"),
   vendorGoods: document.getElementById("vendorGoods"),
   vendorDefaultCostPrice: document.getElementById("vendorDefaultCostPrice"),
-  vendorList: document.getElementById("vendorList"),
-
-  poForm: document.getElementById("poForm"),
-  poVendorSelect: document.getElementById("poVendorSelect"),
+  vendorSearch: document.getElementById("vendorSearch"),
+  vendorCards: document.getElementById("vendorCards"),
+  productForm: document.getElementById("productForm"),
+  productVendorId: document.getElementById("productVendorId"),
+  productName: document.getElementById("productName"),
+  productItemCode: document.getElementById("productItemCode"),
+  productQuantity: document.getElementById("productQuantity"),
+  productCategory: document.getElementById("productCategory"),
+  productStockStatus: document.getElementById("productStockStatus"),
+  productSearch: document.getElementById("productSearch"),
+  productTable: document.getElementById("productTable"),
+  clientForm: document.getElementById("clientForm"),
+  clientName: document.getElementById("clientName"),
+  clientEmail: document.getElementById("clientEmail"),
+  clientPhone: document.getElementById("clientPhone"),
+  clientCity: document.getElementById("clientCity"),
+  clientStatus: document.getElementById("clientStatus"),
+  orderForm: document.getElementById("orderForm"),
+  orderId: document.getElementById("orderId"),
+  orderClientId: document.getElementById("orderClientId"),
+  orderProductId: document.getElementById("orderProductId"),
+  orderEmployeeId: document.getElementById("orderEmployeeId"),
+  orderQuantity: document.getElementById("orderQuantity"),
+  orderDueDate: document.getElementById("orderDueDate"),
+  orderStatus: document.getElementById("orderStatus"),
+  orderSearch: document.getElementById("orderSearch"),
+  orderTable: document.getElementById("orderTable"),
+  salesMetricsCards: document.getElementById("salesMetricsCards"),
+  purchaseOrderForm: document.getElementById("purchaseOrderForm"),
   poNumber: document.getElementById("poNumber"),
+  poVendorId: document.getElementById("poVendorId"),
+  poProductName: document.getElementById("poProductName"),
+  poItemCode: document.getElementById("poItemCode"),
   poGoods: document.getElementById("poGoods"),
   poQuantity: document.getElementById("poQuantity"),
-  poCostPrice: document.getElementById("poCostPrice"),
-  poRaisedAt: document.getElementById("poRaisedAt"),
-  poExpectedAt: document.getElementById("poExpectedAt"),
+  poUnitPrice: document.getElementById("poUnitPrice"),
+  poTotalAmount: document.getElementById("poTotalAmount"),
+  poOrderDate: document.getElementById("poOrderDate"),
+  poExpectedDeliveryDate: document.getElementById("poExpectedDeliveryDate"),
   poStatus: document.getElementById("poStatus"),
-  poList: document.getElementById("poList"),
-
-  vendorAlertForm: document.getElementById("vendorAlertForm"),
-  vendorAlertVendorSelect: document.getElementById("vendorAlertVendorSelect"),
-  vendorAlertPoSelect: document.getElementById("vendorAlertPoSelect"),
-  vendorAlertPriority: document.getElementById("vendorAlertPriority"),
-  vendorAlertMessage: document.getElementById("vendorAlertMessage"),
-  vendorAlertList: document.getElementById("vendorAlertList")
+  poAssignedEmployeeId: document.getElementById("poAssignedEmployeeId"),
+  poNotes: document.getElementById("poNotes"),
+  poSearch: document.getElementById("poSearch"),
+  poTable: document.getElementById("poTable"),
+  poDetailPanel: document.getElementById("poDetailPanel"),
+  poMetricsCards: document.getElementById("poMetricsCards"),
+  managerForm: document.getElementById("managerForm"),
+  managerName: document.getElementById("managerName"),
+  managerEmail: document.getElementById("managerEmail"),
+  managerPhone: document.getElementById("managerPhone"),
+  managerPassword: document.getElementById("managerPassword"),
+  adminUsersTable: document.getElementById("adminUsersTable"),
+  adminMetricsCards: document.getElementById("adminMetricsCards"),
+  activityLogsTable: document.getElementById("activityLogsTable")
 };
 
-let state = loadState();
-let draftAttachments = [];
-
 bootstrap();
+
 async function bootstrap() {
-  normalizeLoadedState();
   bindEvents();
-  setDefaultDueDate();
-  setDefaultPoRaisedDate();
-  await hydrateSessionFromApi();
-  await runReminderSweep();
-  startReminderEngine();
-  render();
+  restoreSession();
+  syncAuthUI();
+  if (APP_STATE.session) {
+    await refreshWorkspace();
+    renderAll();
+  }
 }
 
 function bindEvents() {
-  elements.loginForm.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    await handleLogin();
-  });
-
-  elements.logoutBtn.addEventListener("click", async () => {
-    await handleLogout();
-  });
-
-  elements.managerViewBtn.addEventListener("click", () => switchRole("manager"));
-  elements.employeeViewBtn.addEventListener("click", () => switchRole("employee"));
-  elements.vendorViewBtn.addEventListener("click", () => switchRole("vendor"));
-
-  elements.employeeForm.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    await addEmployee();
-  });
-
-  elements.taskForm.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    await assignTask();
-  });
-
-  elements.taskAttachmentInput.addEventListener("change", async (event) => {
-    await addDraftAttachmentsFromFiles(event.target.files);
-    event.target.value = "";
-  });
-
-  elements.attachmentDropzone.addEventListener("dragover", (event) => {
-    event.preventDefault();
-    elements.attachmentDropzone.classList.add("dragover");
-  });
-
-  elements.attachmentDropzone.addEventListener("dragleave", () => {
-    elements.attachmentDropzone.classList.remove("dragover");
-  });
-
-  elements.attachmentDropzone.addEventListener("drop", async (event) => {
-    event.preventDefault();
-    elements.attachmentDropzone.classList.remove("dragover");
-    await addDraftAttachmentsFromFiles(event.dataTransfer.files);
-  });
-
-  elements.draftAttachmentList.addEventListener("click", (event) => {
-    const removeButton = event.target.closest("button[data-action='remove-draft-attachment']");
-    if (!removeButton) {
-      return;
-    }
-    removeDraftAttachment(removeButton.dataset.attachmentId);
-  });
-
-  elements.requestNotificationPermission.addEventListener("click", requestBrowserNotificationPermission);
-
-  elements.autoOpenWhatsApp.addEventListener("change", (event) => {
-    state.settings.autoOpenWhatsApp = Boolean(event.target.checked);
-    saveState();
-  });
-
-  elements.employeeSelectDashboard.addEventListener("change", (event) => {
-    state.settings.selectedEmployeeId = event.target.value || null;
-    saveState();
-    renderEmployeeView();
-  });
-
-  elements.managerMessageEmployeeSelect.addEventListener("change", (event) => {
-    state.settings.managerMessageEmployeeId = event.target.value || null;
-    saveState();
-    renderManagerMessaging();
-  });
-
-  elements.managerMessageForm.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    await sendInternalMessage("manager");
-  });
-
-  elements.employeeMessageForm.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    await sendInternalMessage("employee");
-  });
-
-  elements.managerTaskList.addEventListener("click", async (event) => {
-    const button = event.target.closest("button[data-action]");
-    if (!button) {
-      return;
-    }
-
-    const taskId = button.dataset.taskId;
-    const action = button.dataset.action;
-
-    if (action === "manager-complete") {
-      await completeTask(taskId, "manager");
-    }
-
-    if (action === "manager-whatsapp") {
-      openWhatsApp(taskId, "Manager requested update on assigned task.");
-    }
-
-    if (action === "manager-reminder") {
-      if (!isManagerSession()) {
-        return;
-      }
-      await sendReminderNow(taskId, "manual");
-    }
-  });
-
-  elements.employeeTaskList.addEventListener("click", async (event) => {
-    const button = event.target.closest("button[data-action]");
-    if (!button) {
-      return;
-    }
-
-    const taskId = button.dataset.taskId;
-    const action = button.dataset.action;
-
-    if (action === "employee-complete") {
-      await completeTask(taskId, "employee");
-    }
-
-    if (action === "employee-whatsapp") {
-      openWhatsApp(taskId, "Employee task acknowledgement and progress update.");
-    }
-  });
-
-  elements.calendarPrevBtn.addEventListener("click", () => {
-    state.settings.calendarMonthOffset -= 1;
-    saveState();
-    renderCalendar();
-  });
-
-  elements.calendarNextBtn.addEventListener("click", () => {
-    state.settings.calendarMonthOffset += 1;
-    saveState();
-    renderCalendar();
-  });
-
-  elements.calendarGrid.addEventListener("click", (event) => {
-    const cell = event.target.closest(".day-cell");
-    if (!cell || !cell.dataset.date) {
-      return;
-    }
-    state.settings.calendarSelectedDate = cell.dataset.date;
-    saveState();
-    renderCalendar();
-  });
-
-  elements.vendorForm.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    await addVendor();
-  });
-
-  elements.poForm.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    await addPurchaseOrder();
-  });
-
-  elements.poVendorSelect.addEventListener("change", () => {
-    prefillPoCostPriceFromVendor(false);
-  });
-
-  elements.vendorAlertVendorSelect.addEventListener("change", () => {
-    renderVendorAlertPoOptions();
-  });
-
-  elements.vendorAlertForm.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    await sendVendorAlert();
-  });
+  el.loginForm.addEventListener("submit", onLogin);
+  el.logoutBtn.addEventListener("click", onLogout);
+  el.navList.addEventListener("click", onNavClick);
+  el.employeeForm.addEventListener("submit", onCreateEmployee);
+  el.taskForm.addEventListener("submit", onCreateTask);
+  el.taskList.addEventListener("change", onTaskStatusChange);
+  el.taskSearch.addEventListener("input", renderTasks);
+  el.vendorForm.addEventListener("submit", onCreateVendor);
+  el.productForm.addEventListener("submit", onCreateProduct);
+  el.vendorSearch.addEventListener("input", renderVendors);
+  el.productSearch.addEventListener("input", renderProducts);
+  el.clientForm.addEventListener("submit", onCreateClient);
+  el.orderForm.addEventListener("submit", onCreateOrder);
+  el.orderTable.addEventListener("change", onOrderStatusChange);
+  el.orderSearch.addEventListener("input", renderOrders);
+  el.purchaseOrderForm.addEventListener("submit", onCreatePurchaseOrder);
+  el.poSearch.addEventListener("input", renderPurchaseOrders);
+  el.poTable.addEventListener("change", onPurchaseOrderStatusChange);
+  el.poTable.addEventListener("click", onPurchaseOrderClick);
+  el.managerForm.addEventListener("submit", onCreateManager);
+  el.adminUsersTable.addEventListener("click", onAdminUserAction);
 }
 
-async function apiRequest(path, options = {}) {
-  const method = options.method || "GET";
-  const body = options.body;
-  const requiresAuth = Boolean(options.requiresAuth);
+function resolveApiBaseUrl() {
+  return window.location.protocol === "file:" ? "http://localhost:4567/api" : "/api";
+}
+
+function persistSession() {
+  localStorage.setItem("taskapp_session_v2", JSON.stringify(APP_STATE.session));
+}
+
+function restoreSession() {
+  try {
+    const raw = localStorage.getItem("taskapp_session_v2");
+    APP_STATE.session = raw ? JSON.parse(raw) : null;
+  } catch (_) {
+    APP_STATE.session = null;
+  }
+}
+
+function clearSession() {
+  APP_STATE.session = null;
+  persistSession();
+}
+
+function currentRole() {
+  return APP_STATE.session?.user?.role || null;
+}
+
+function isPrivileged() {
+  return ["manager", "admin"].includes(currentRole());
+}
+
+function isAdmin() {
+  return currentRole() === "admin";
+}
+
+function syncAuthUI() {
+  const loggedIn = Boolean(APP_STATE.session?.token);
+  el.loginPanel.classList.toggle("hidden", loggedIn);
+  el.workspaceShell.classList.toggle("hidden", !loggedIn);
+  if (loggedIn) {
+    el.sessionLabel.textContent = `${APP_STATE.session.user.name || APP_STATE.session.user.email} (${APP_STATE.session.user.role})`;
+  }
+}
+
+async function api(path, options = {}) {
   const headers = {};
-
-  if (body !== undefined) {
-    headers["Content-Type"] = "application/json";
-  }
-
-  if (requiresAuth && state.session && state.session.token) {
-    headers.Authorization = `Bearer ${state.session.token}`;
-  }
-
+  if (options.body !== undefined) headers["Content-Type"] = "application/json";
+  if (APP_STATE.session?.token) headers.Authorization = `Bearer ${APP_STATE.session.token}`;
   const response = await fetch(`${API_BASE_URL}${path}`, {
-    method,
+    method: options.method || "GET",
     headers,
-    body: body === undefined ? undefined : JSON.stringify(body)
+    body: options.body === undefined ? undefined : JSON.stringify(options.body)
   });
-
-  const rawResponse = await response.text();
-  let payload = {};
-  if (rawResponse) {
-    try {
-      payload = JSON.parse(rawResponse);
-    } catch (error) {
-      payload = {};
-    }
-  }
-
-  if (!response.ok) {
-    if (requiresAuth && response.status === 401) {
-      clearSessionState();
-      saveState();
-      render();
-    }
-    throw new Error(payload.error || `Request failed (${response.status}).`);
-  }
-
+  const text = await response.text();
+  const payload = text ? JSON.parse(text) : {};
+  if (!response.ok) throw new Error(payload.error || `Request failed (${response.status})`);
   return payload;
 }
 
-function normalizeEmployeeRecord(employee, index) {
-  return {
-    id: String(employee.id || generateId()),
-    name: String(employee.name || `Employee ${index + 1}`),
-    phone: normalizePhone(employee.phone),
-    email: normalizeEmail(
-      employee.email || `${slugify(employee.name || "employee")}.${index + 1}@taskapp.local`
-    ),
-    createdAt: employee.createdAt || new Date().toISOString(),
-    updatedAt: employee.updatedAt || employee.createdAt || new Date().toISOString()
+async function refreshWorkspace() {
+  const payload = await api("/workspace");
+  APP_STATE.workspace = {
+    employees: payload.employees || [],
+    tasks: payload.tasks || [],
+    vendors: payload.vendors || [],
+    products: payload.products || [],
+    clients: payload.clients || [],
+    orders: payload.orders || [],
+    purchaseOrders: payload.purchaseOrders || [],
+    salesAnalytics: payload.salesAnalytics || {},
+    poAnalytics: payload.poAnalytics || {},
+    adminMetrics: payload.adminMetrics || null,
+    activityLogs: payload.activityLogs || [],
+    users: APP_STATE.workspace.users || []
   };
-}
-
-function upsertEmployeeRecord(employeePayload) {
-  const normalized = normalizeEmployeeRecord(employeePayload, state.employees.length);
-  const existingIndex = state.employees.findIndex((employee) => employee.id === normalized.id);
-  if (existingIndex >= 0) {
-    state.employees[existingIndex] = normalized;
-  } else {
-    state.employees.push(normalized);
-  }
-  return normalized;
-}
-
-function clearSessionState() {
-  state.session = null;
-}
-function normalizeTaskRecord(task, index) {
-  const dueAt = new Date(task.dueAt);
-  const createdAt = new Date(task.createdAt);
-  const updatedAt = new Date(task.updatedAt);
-  const completedAt = task.completedAt ? new Date(task.completedAt) : null;
-  const nextReminderAt = task.nextReminderAt ? new Date(task.nextReminderAt) : null;
-  const lastReminderAt = task.lastReminderAt ? new Date(task.lastReminderAt) : null;
-
-  return {
-    id: String(task.id || generateId()),
-    title: String(task.title || `Task ${index + 1}`),
-    description: String(task.description || ""),
-    assigneeId: String(task.assigneeId || ""),
-    dueAt: Number.isNaN(dueAt.getTime()) ? new Date().toISOString() : dueAt.toISOString(),
-    urgency: ["Low", "Medium", "High", "Critical"].includes(task.urgency) ? task.urgency : "Medium",
-    status: task.status === "Completed" ? "Completed" : "Pending",
-    reminderEveryMinutes: Math.max(1, Number(task.reminderEveryMinutes) || 60),
-    persistentReminders: Boolean(task.persistentReminders),
-    nextReminderAt: nextReminderAt && !Number.isNaN(nextReminderAt.getTime()) ? nextReminderAt.toISOString() : null,
-    lastReminderAt: lastReminderAt && !Number.isNaN(lastReminderAt.getTime()) ? lastReminderAt.toISOString() : null,
-    attachments: Array.isArray(task.attachments)
-      ? task.attachments
-          .filter((attachment) => attachment && attachment.dataUrl)
-          .map((attachment) => ({
-            id: String(attachment.id || generateId()),
-            name: String(attachment.name || "attachment"),
-            type: String(attachment.type || "application/octet-stream"),
-            size: Math.max(0, Number(attachment.size) || 0),
-            dataUrl: String(attachment.dataUrl),
-            uploadedAt: attachment.uploadedAt || new Date().toISOString()
-          }))
-      : [],
-    createdAt: Number.isNaN(createdAt.getTime()) ? new Date().toISOString() : createdAt.toISOString(),
-    updatedAt: Number.isNaN(updatedAt.getTime())
-      ? (Number.isNaN(createdAt.getTime()) ? new Date().toISOString() : createdAt.toISOString())
-      : updatedAt.toISOString(),
-    completedAt: completedAt && !Number.isNaN(completedAt.getTime()) ? completedAt.toISOString() : null
-  };
-}
-
-function normalizeNotificationRecord(notification, index) {
-  return {
-    id: String(notification.id || generateId()),
-    employeeId: String(notification.employeeId || ""),
-    taskId: notification.taskId ? String(notification.taskId) : null,
-    type: String(notification.type || "general"),
-    channel: notification.channel === "whatsapp" ? "whatsapp" : "app",
-    message: String(notification.message || ""),
-    meta: notification.meta && typeof notification.meta === "object" ? notification.meta : null,
-    createdAt: notification.createdAt || new Date().toISOString()
-  };
-}
-
-function normalizeMessageRecord(message, index) {
-  return {
-    id: String(message.id || generateId()),
-    employeeId: String(message.employeeId || ""),
-    taskId: message.taskId ? String(message.taskId) : null,
-    senderRole: message.senderRole === "manager" ? "manager" : "employee",
-    content: String(message.content || ""),
-    createdAt: message.createdAt || new Date().toISOString()
-  };
-}
-
-function normalizeVendorRecord(vendor, index) {
-  return {
-    id: String(vendor.id || generateId()),
-    name: String(vendor.name || `Vendor ${index + 1}`),
-    contactEmail: normalizeEmail(vendor.contactEmail || ""),
-    goods: Array.isArray(vendor.goods)
-      ? vendor.goods.map((item) => String(item)).filter(Boolean)
-      : parseGoodsList(vendor.goods || ""),
-    defaultCostPrice: Number(vendor.defaultCostPrice) || 0,
-    createdAt: vendor.createdAt || new Date().toISOString(),
-    updatedAt: vendor.updatedAt || vendor.createdAt || new Date().toISOString()
-  };
-}
-
-function normalizePurchaseOrderRecord(po, index) {
-  return {
-    id: String(po.id || generateId()),
-    vendorId: String(po.vendorId || ""),
-    poNumber: String(po.poNumber || `PO-${index + 1}`),
-    goods: String(po.goods || ""),
-    quantity: Math.max(1, Number(po.quantity) || 1),
-    costPrice: Number(po.costPrice) || 0,
-    raisedAt: po.raisedAt || new Date().toISOString(),
-    expectedAt: po.expectedAt || null,
-    status: String(po.status || "Open"),
-    createdAt: po.createdAt || new Date().toISOString()
-  };
-}
-
-function normalizeVendorAlertRecord(alertItem, index) {
-  return {
-    id: String(alertItem.id || generateId()),
-    vendorId: String(alertItem.vendorId || ""),
-    poId: alertItem.poId ? String(alertItem.poId) : null,
-    priority: ["Low", "Medium", "High", "Critical"].includes(alertItem.priority)
-      ? alertItem.priority
-      : "Medium",
-    message: String(alertItem.message || ""),
-    sentBy: String(alertItem.sentBy || ""),
-    createdAt: alertItem.createdAt || new Date().toISOString()
-  };
-}
-
-function normalizeWorkspaceState(payload) {
-  return {
-    employees: Array.isArray(payload.employees)
-      ? payload.employees.map((employee, index) => normalizeEmployeeRecord(employee, index))
-      : [],
-    tasks: Array.isArray(payload.tasks)
-      ? payload.tasks.map((task, index) => normalizeTaskRecord(task, index))
-      : [],
-    notifications: Array.isArray(payload.notifications)
-      ? payload.notifications.map((notification, index) => normalizeNotificationRecord(notification, index))
-      : [],
-    messages: Array.isArray(payload.messages)
-      ? payload.messages.map((message, index) => normalizeMessageRecord(message, index))
-      : [],
-    vendors: Array.isArray(payload.vendors)
-      ? payload.vendors.map((vendor, index) => normalizeVendorRecord(vendor, index))
-      : [],
-    purchaseOrders: Array.isArray(payload.purchaseOrders)
-      ? payload.purchaseOrders.map((po, index) => normalizePurchaseOrderRecord(po, index))
-      : [],
-    vendorAlerts: Array.isArray(payload.vendorAlerts)
-      ? payload.vendorAlerts.map((alertItem, index) => normalizeVendorAlertRecord(alertItem, index))
-      : []
-  };
-}
-
-async function refreshWorkspaceFromApi(shouldSave) {
-  if (!isAuthenticated()) {
-    return;
-  }
-
-  const payload = await apiRequest("/workspace", { requiresAuth: true });
-  const workspace = normalizeWorkspaceState(payload || {});
-
-  state.employees = workspace.employees;
-  state.tasks = workspace.tasks;
-  state.notifications = workspace.notifications;
-  state.messages = workspace.messages;
-  state.vendors = workspace.vendors;
-  state.purchaseOrders = workspace.purchaseOrders;
-  state.vendorAlerts = workspace.vendorAlerts;
-
-  if (isEmployeeSession()) {
-    const ownId = state.session.employeeId || state.session.userId || null;
-    state.settings.selectedEmployeeId = ownId;
-    state.settings.managerMessageEmployeeId = ownId;
-    state.settings.activeRole = "employee";
-  } else if (isManagerSession()) {
-    if (state.employees.length) {
-      if (!state.employees.some((employee) => employee.id === state.settings.selectedEmployeeId)) {
-        state.settings.selectedEmployeeId = state.employees[0].id;
-      }
-      if (!state.employees.some((employee) => employee.id === state.settings.managerMessageEmployeeId)) {
-        state.settings.managerMessageEmployeeId = state.employees[0].id;
-      }
-    } else {
-      state.settings.selectedEmployeeId = null;
-      state.settings.managerMessageEmployeeId = null;
-    }
-  }
-
-  if (shouldSave !== false) {
-    saveState();
+  if (isAdmin()) {
+    const usersPayload = await api("/admin/users");
+    APP_STATE.workspace.users = usersPayload.users || [];
   }
 }
 
-async function hydrateSessionFromApi() {
-  if (!state.session || !state.session.token) {
-    return;
-  }
+function showToast(message, type = "info") {
+  const node = document.createElement("div");
+  node.className = `toast ${type}`;
+  node.textContent = message;
+  el.toastContainer.appendChild(node);
+  setTimeout(() => node.remove(), 2600);
+}
 
+async function onLogin(event) {
+  event.preventDefault();
   try {
-    const payload = await apiRequest("/auth/me", { requiresAuth: true });
-    const user = payload.user || {};
-    if (!user.id || !user.role) {
-      throw new Error("Invalid session payload.");
-    }
-
-    const role = user.role === "manager" ? "manager" : "employee";
-    state.session = {
-      token: String(state.session.token),
-      role,
-      userId: user.id,
-      employeeId: role === "employee" ? user.id : null,
-      email: normalizeEmail(user.email),
-      name: String(user.name || user.email || "User"),
-      phone: normalizePhone(user.phone),
-      loggedInAt: state.session.loggedInAt || new Date().toISOString(),
-      expiresAt: payload.expiresAt || state.session.expiresAt || null
-    };
-
-    if (role === "manager") {
-      if (!["manager", "employee", "vendor"].includes(state.settings.activeRole)) {
-        state.settings.activeRole = "manager";
-      }
-    } else {
-      state.settings.selectedEmployeeId = user.id;
-      state.settings.managerMessageEmployeeId = user.id;
-      state.settings.activeRole = "employee";
-    }
-    await refreshWorkspaceFromApi(false);
-
-    saveState();
-  } catch (error) {
-    console.warn("Failed to restore backend session:", error);
-    clearSessionState();
-    saveState();
-  }
-}
-
-function normalizeLoadedState() {
-  const emailSet = new Set();
-  state.employees = Array.isArray(state.employees)
-    ? state.employees.map((employee, index) => {
-        const fixed = normalizeEmployeeRecord(employee, index);
-        let candidateEmail = fixed.email || `employee.${index + 1}@taskapp.local`;
-        let suffix = 1;
-        while (emailSet.has(candidateEmail)) {
-          candidateEmail = `${slugify(fixed.name || "employee")}.${index + 1}.${suffix}@taskapp.local`;
-          suffix += 1;
-        }
-        emailSet.add(candidateEmail);
-        fixed.email = candidateEmail;
-        return fixed;
-      })
-    : [];
-
-  state.tasks = Array.isArray(state.tasks)
-    ? state.tasks.map((task) => ({
-        ...task,
-        attachments: Array.isArray(task.attachments) ? task.attachments : []
-      }))
-    : [];
-
-  state.vendors = Array.isArray(state.vendors)
-    ? state.vendors.map((vendor, index) => ({
-        id: vendor.id || generateId(),
-        name: String(vendor.name || `Vendor ${index + 1}`),
-        contactEmail: normalizeEmail(vendor.contactEmail || ""),
-        goods: Array.isArray(vendor.goods)
-          ? vendor.goods.map((item) => String(item)).filter(Boolean)
-          : parseGoodsList(vendor.goods || ""),
-        defaultCostPrice: Number(vendor.defaultCostPrice) || 0,
-        createdAt: vendor.createdAt || new Date().toISOString()
-      }))
-    : [];
-
-  state.purchaseOrders = Array.isArray(state.purchaseOrders)
-    ? state.purchaseOrders.map((po) => ({
-        ...po,
-        quantity: Math.max(1, Number(po.quantity) || 1),
-        costPrice: Number(po.costPrice) || 0,
-        status: po.status || "Open"
-      }))
-    : [];
-
-  state.vendorAlerts = Array.isArray(state.vendorAlerts)
-    ? state.vendorAlerts.map((alertItem) => ({
-        ...alertItem,
-        priority: alertItem.priority || "Medium"
-      }))
-    : [];
-
-  state.settings = {
-    ...cloneDefaultState().settings,
-    ...(state.settings && typeof state.settings === "object" ? state.settings : {})
-  };
-
-  if (!state.settings.calendarSelectedDate) {
-    state.settings.calendarSelectedDate = todayDateKey();
-  }
-
-  if (!state.session || !state.session.role || !state.session.token) {
-    state.session = null;
-  } else if (state.session.role === "employee") {
-    const employeeId = state.session.employeeId || state.session.userId || null;
-    state.session = {
-      ...state.session,
-      role: "employee",
-      token: String(state.session.token),
-      email: normalizeEmail(state.session.email),
-      userId: state.session.userId || employeeId,
-      employeeId
-    };
-    const employee = employeeId ? getEmployeeById(employeeId) : null;
-    if (employee && state.settings.selectedEmployeeId !== employee.id) {
-      state.settings.selectedEmployeeId = employee.id;
-    }
-  } else if (state.session.role === "manager") {
-    state.session = {
-      ...state.session,
-      role: "manager",
-      token: String(state.session.token),
-      email: normalizeEmail(state.session.email),
-      userId: state.session.userId || null,
-      employeeId: null
-    };
-  } else {
-    state.session = null;
-  }
-
-  if (!state.settings.selectedEmployeeId && state.employees.length) {
-    state.settings.selectedEmployeeId = state.employees[0].id;
-  }
-
-  if (!state.settings.managerMessageEmployeeId && state.employees.length) {
-    state.settings.managerMessageEmployeeId = state.employees[0].id;
-  }
-
-  if (!["manager", "employee", "vendor"].includes(state.settings.activeRole)) {
-    state.settings.activeRole = "manager";
-  }
-
-  if (isEmployeeSession()) {
-    state.settings.activeRole = "employee";
-  }
-
-  saveState();
-}
-
-async function handleLogin() {
-  const email = normalizeEmail(elements.loginEmail.value);
-  const password = String(elements.loginPassword.value || "");
-
-  if (!email || !password) {
-    alert("Email and password are required.");
-    return;
-  }
-
-  try {
-    const payload = await apiRequest("/auth/login", {
+    const payload = await api("/auth/login", {
       method: "POST",
-      body: { email, password }
+      body: { email: el.loginEmail.value.trim(), password: el.loginPassword.value }
     });
-    const user = payload.user || {};
-
-    if (!payload.token || !user.id || !user.role) {
-      throw new Error("Login response was invalid.");
-    }
-
-    const role = user.role === "manager" ? "manager" : "employee";
-    state.session = {
-      token: String(payload.token),
-      role,
-      userId: user.id,
-      employeeId: role === "employee" ? user.id : null,
-      email: normalizeEmail(user.email),
-      name: String(user.name || user.email || "User"),
-      phone: normalizePhone(user.phone),
-      loggedInAt: new Date().toISOString(),
-      expiresAt: payload.expiresAt || null
-    };
-
-    if (role === "manager") {
-      if (!["manager", "employee", "vendor"].includes(state.settings.activeRole)) {
-        state.settings.activeRole = "manager";
-      }
-    } else {
-      state.settings.selectedEmployeeId = user.id;
-      state.settings.managerMessageEmployeeId = user.id;
-      state.settings.activeRole = "employee";
-    }
-    await refreshWorkspaceFromApi(false);
-
-    saveState();
-    elements.loginForm.reset();
-    render();
+    APP_STATE.session = payload;
+    persistSession();
+    syncAuthUI();
+    await refreshWorkspace();
+    renderAll();
+    showToast("Logged in successfully", "success");
+    el.loginForm.reset();
   } catch (error) {
-    alert(error.message || "Unable to log in right now.");
+    showToast(error.message, "error");
   }
 }
 
-async function handleLogout() {
-  if (state.session && state.session.token) {
-    try {
-      await apiRequest("/auth/logout", { method: "POST", requiresAuth: true });
-    } catch (error) {
-      console.warn("Logout API call failed:", error);
-    }
-  }
-
-  clearSessionState();
-  saveState();
-  render();
+async function onLogout() {
+  try { await api("/auth/logout", { method: "POST" }); } catch (_) {}
+  clearSession();
+  syncAuthUI();
 }
 
-function isAuthenticated() {
-  return Boolean(state.session && state.session.role && state.session.token);
+function onNavClick(event) {
+  const btn = event.target.closest("button[data-page]");
+  if (!btn) return;
+  APP_STATE.page = btn.dataset.page;
+  renderPages();
 }
 
-function isManagerSession() {
-  return isAuthenticated() && state.session.role === "manager";
-}
-
-function isEmployeeSession() {
-  return isAuthenticated() && state.session.role === "employee";
-}
-
-function getSessionEmployee() {
-  if (!isEmployeeSession()) {
-    return null;
-  }
-
-  const employee = getEmployeeById(state.session.employeeId);
-  if (employee) {
-    return employee;
-  }
-
-  return {
-    id: state.session.employeeId || state.session.userId || "session-employee",
-    name: String(state.session.name || "Employee"),
-    email: normalizeEmail(state.session.email),
-    phone: normalizePhone(state.session.phone),
-    createdAt: state.session.loggedInAt || new Date().toISOString(),
-    updatedAt: state.session.loggedInAt || new Date().toISOString()
-  };
-}
-
-function switchRole(role) {
-  if (!isAuthenticated()) {
-    return;
-  }
-
-  if (isEmployeeSession()) {
-    state.settings.activeRole = "employee";
-    saveState();
-    renderRolePanels();
-    return;
-  }
-
-  if (!["manager", "employee", "vendor"].includes(role)) {
-    return;
-  }
-
-  state.settings.activeRole = role;
-  saveState();
-  renderRolePanels();
-}
-
-function setDefaultDueDate() {
-  if (elements.taskDueAt.value) {
-    return;
-  }
-  const inOneDay = new Date(Date.now() + 24 * 60 * 60 * 1000);
-  elements.taskDueAt.value = toDatetimeLocalValue(inOneDay);
-}
-
-function setDefaultPoRaisedDate() {
-  if (elements.poRaisedAt.value) {
-    return;
-  }
-  elements.poRaisedAt.value = toDateInputValue(new Date());
-}
-
-async function addEmployee() {
-  if (!isManagerSession()) {
-    alert("Only managers can add employees.");
-    return;
-  }
-
-  const name = elements.employeeName.value.trim();
-  const email = normalizeEmail(elements.employeeEmail.value);
-  const password = String(elements.employeePassword.value || "").trim();
-  const phone = normalizePhone(elements.employeePhone.value);
-
-  if (!name || !email || !password || !phone) {
-    alert("Name, email, password, and WhatsApp number are required.");
-    return;
-  }
-
-  try {
-    await apiRequest("/employees", {
-      method: "POST",
-      requiresAuth: true,
-      body: { name, email, password, phone }
-    });
-    await refreshWorkspaceFromApi(false);
-
-    elements.employeeForm.reset();
-    saveState();
-    render();
-  } catch (error) {
-    alert(error.message || "Unable to create employee right now.");
-  }
-}
-
-async function assignTask() {
-  if (!isManagerSession()) {
-    alert("Only managers can assign tasks.");
-    return;
-  }
-
-  if (!state.employees.length) {
-    alert("Please add at least one employee before assigning tasks.");
-    return;
-  }
-
-  const title = elements.taskTitle.value.trim();
-  const description = elements.taskDescription.value.trim();
-  const assigneeId = elements.taskAssignee.value;
-  const dueAtRaw = elements.taskDueAt.value;
-  const urgency = elements.taskUrgency.value;
-  const reminderEveryMinutes = Math.max(1, Number(elements.taskReminderMinutes.value) || 60);
-  const persistentReminders = Boolean(elements.taskPersistentReminders.checked);
-  const attachments = draftAttachments.map((attachment) => ({ ...attachment }));
-
-  if (!title || !assigneeId || !dueAtRaw) {
-    alert("Task title, assignee, and due date are required.");
-    return;
-  }
-
-  const dueDate = new Date(dueAtRaw);
-  if (Number.isNaN(dueDate.getTime())) {
-    alert("Invalid due date.");
-    return;
-  }
-
-  try {
-    const payload = await apiRequest("/tasks", {
-      method: "POST",
-      requiresAuth: true,
-      body: {
-        title,
-        description,
-        assigneeId,
-        dueAt: dueDate.toISOString(),
-        urgency,
-        reminderEveryMinutes,
-        persistentReminders,
-        attachments
-      }
-    });
-
-    if (state.settings.autoOpenWhatsApp && payload.whatsappUrl) {
-      window.open(payload.whatsappUrl, "_blank", "noopener,noreferrer");
-    }
-
-    const employee = getEmployeeById(assigneeId);
-    notifyBrowser(
-      "New Task Assigned",
-      `${employee ? employee.name : "Employee"} has a ${urgency.toLowerCase()} priority task.`
-    );
-
-    elements.taskForm.reset();
-    elements.taskReminderMinutes.value = String(reminderEveryMinutes);
-    elements.taskPersistentReminders.checked = persistentReminders;
-    elements.autoOpenWhatsApp.checked = state.settings.autoOpenWhatsApp;
-    setDefaultDueDate();
-    clearDraftAttachments(false);
-
-    await refreshWorkspaceFromApi(false);
-    saveState();
-    render();
-  } catch (error) {
-    alert(error.message || "Unable to assign task right now.");
-  }
-}
-
-async function completeTask(taskId, completedBy) {
-  const task = getTaskById(taskId);
-  if (task && task.status === "Completed") {
-    return;
-  }
-
-  if (completedBy === "manager" && !isManagerSession()) {
-    alert("Only managers can use this action.");
-    return;
-  }
-
-  if (completedBy === "employee") {
-    if (!isEmployeeSession()) {
-      alert("Only logged-in employees can use this action.");
-      return;
-    }
-    if (task && state.session.employeeId !== task.assigneeId) {
-      alert("You can complete only your own tasks.");
-      return;
-    }
-  }
-  try {
-    await apiRequest(`/tasks/${encodeURIComponent(taskId)}/complete`, {
-      method: "POST",
-      requiresAuth: true
-    });
-    await refreshWorkspaceFromApi(false);
-    saveState();
-    render();
-  } catch (error) {
-    alert(error.message || "Unable to complete task right now.");
-  }
-}
-
-function openWhatsApp(taskId, contextText) {
-  const task = getTaskById(taskId);
-  if (!task) {
-    return;
-  }
-
-  if (isEmployeeSession() && state.session.employeeId !== task.assigneeId) {
-    alert("You can open WhatsApp only for your own tasks.");
-    return;
-  }
-
-  const employee = getEmployeeById(task.assigneeId);
-  if (!employee || !employee.phone) {
-    alert("This employee does not have a valid WhatsApp number.");
-    return;
-  }
-
-  const whatsappUrl = buildWhatsAppUrl(employee, task, contextText);
-  if (!whatsappUrl) {
-    alert("Could not generate WhatsApp URL.");
-    return;
-  }
-
-  window.open(whatsappUrl, "_blank", "noopener,noreferrer");
-}
-
-async function sendReminderNow(taskId, source, options = {}) {
-  const skipRefresh = Boolean(options.skipRefresh);
-  const task = getTaskById(taskId);
-  if (task && task.status === "Completed") {
-    return false;
-  }
-
-  if (!isManagerSession()) {
-    if (source === "manual") {
-      alert("Only managers can send reminders.");
-    }
-    return false;
-  }
-
-  try {
-    const payload = await apiRequest(`/tasks/${encodeURIComponent(taskId)}/reminder`, {
-      method: "POST",
-      requiresAuth: true,
-      body: { source }
-    });
-
-    if (source === "manual" && state.settings.autoOpenWhatsApp && payload.whatsappUrl) {
-      window.open(payload.whatsappUrl, "_blank", "noopener,noreferrer");
-    }
-
-    const taskForNotice = payload && payload.task ? normalizeTaskRecord(payload.task, 0) : task;
-    const employee = taskForNotice ? getEmployeeById(taskForNotice.assigneeId) : null;
-    if (taskForNotice) {
-      notifyBrowser(
-        "Persistent Reminder",
-        `${employee ? employee.name : "Employee"}: "${taskForNotice.title}" is still pending (${taskForNotice.urgency}).`
-      );
-    }
-
-    if (!skipRefresh) {
-      await refreshWorkspaceFromApi(false);
-      saveState();
-      render();
-    }
-
-    return true;
-  } catch (error) {
-    if (source === "manual") {
-      alert(error.message || "Unable to send reminder right now.");
-    } else {
-      console.warn("Automatic reminder failed:", error);
-    }
-    return false;
-  }
-}
-
-async function runReminderSweep() {
-  if (!isManagerSession()) {
-    return;
-  }
-
-  const now = Date.now();
-  const dueTaskIds = [];
-
-  for (const task of state.tasks) {
-    if (task.status === "Completed" || !task.persistentReminders) {
-      continue;
-    }
-
-    const nextReminder = task.nextReminderAt ? new Date(task.nextReminderAt).getTime() : NaN;
-    if (!Number.isFinite(nextReminder) || nextReminder <= now) {
-      dueTaskIds.push(task.id);
-    }
-  }
-
-  if (!dueTaskIds.length) {
-    return;
-  }
-
-  let changed = false;
-  for (const taskId of dueTaskIds) {
-    const sent = await sendReminderNow(taskId, "automatic", { skipRefresh: true });
-    if (sent) {
-      changed = true;
-    }
-  }
-
-  if (changed) {
-    await refreshWorkspaceFromApi(false);
-    saveState();
-    render();
-  }
-}
-
-function startReminderEngine() {
-  setInterval(() => {
-    runReminderSweep().catch((error) => {
-      console.warn("Reminder sweep failed:", error);
-    });
-  }, 30000);
-}
-
-function requestBrowserNotificationPermission() {
-  if (!("Notification" in window)) {
-    alert("This browser does not support notifications.");
-    return;
-  }
-
-  Notification.requestPermission().then((permission) => {
-    if (permission === "granted") {
-      alert("Browser reminders enabled.");
-    } else {
-      alert("Notification permission not granted.");
-    }
+function renderPages() {
+  const role = currentRole();
+  const allowed = role === "admin" ? ["tasks", "vendors", "sales", "po", "admin"] : ["tasks", "vendors", "sales", "po"];
+  if (!allowed.includes(APP_STATE.page)) APP_STATE.page = "tasks";
+  Object.entries(el.pages).forEach(([name, node]) => {
+    node.classList.toggle("active", name === APP_STATE.page);
   });
-}
-
-function notifyBrowser(title, body) {
-  if (!("Notification" in window)) {
-    return;
-  }
-  if (Notification.permission === "granted") {
-    new Notification(title, { body });
-  }
-}
-
-async function addDraftAttachmentsFromFiles(fileList) {
-  if (!isManagerSession()) {
-    alert("Only managers can attach files while assigning tasks.");
-    return;
-  }
-
-  const files = Array.from(fileList || []);
-  if (!files.length) {
-    return;
-  }
-
-  const issues = [];
-  let totalBytes = draftAttachments.reduce((sum, attachment) => sum + (Number(attachment.size) || 0), 0);
-
-  for (const file of files) {
-    if (draftAttachments.length >= MAX_ATTACHMENT_COUNT) {
-      issues.push(`Skipped "${file.name}": maximum ${MAX_ATTACHMENT_COUNT} attachments allowed.`);
-      continue;
-    }
-
-    if (file.size > MAX_ATTACHMENT_BYTES) {
-      issues.push(`Skipped "${file.name}": file is larger than ${formatFileSize(MAX_ATTACHMENT_BYTES)}.`);
-      continue;
-    }
-
-    if (totalBytes + file.size > MAX_TOTAL_ATTACHMENT_BYTES) {
-      issues.push(`Skipped "${file.name}": total attachment size exceeds ${formatFileSize(MAX_TOTAL_ATTACHMENT_BYTES)}.`);
-      continue;
-    }
-
-    try {
-      const dataUrl = await readFileAsDataUrl(file);
-      draftAttachments.push({
-        id: generateId(),
-        name: file.name || "attachment",
-        type: file.type || "application/octet-stream",
-        size: file.size || 0,
-        dataUrl,
-        uploadedAt: new Date().toISOString()
-      });
-      totalBytes += file.size || 0;
-    } catch (error) {
-      issues.push(`Skipped "${file.name}": could not read the file.`);
-    }
-  }
-
-  renderDraftAttachments();
-  if (issues.length) {
-    alert(issues.join("\n"));
-  }
-}
-
-function readFileAsDataUrl(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = () => reject(new Error("Failed to read file"));
-    reader.readAsDataURL(file);
+  [...el.navList.querySelectorAll("button[data-page]")].forEach((button) => {
+    button.classList.toggle("active", button.dataset.page === APP_STATE.page);
+    button.classList.toggle("hidden", button.dataset.page === "admin" && !isAdmin());
   });
+  el.pageTitle.textContent = APP_STATE.page === "sales"
+    ? "Sales & Orders"
+    : APP_STATE.page === "vendors"
+      ? "Vendor Database"
+      : APP_STATE.page === "po"
+        ? "PO Management"
+        : APP_STATE.page === "admin"
+          ? "Admin"
+          : "Tasks";
 }
 
-function removeDraftAttachment(attachmentId) {
-  draftAttachments = draftAttachments.filter((attachment) => attachment.id !== attachmentId);
-  renderDraftAttachments();
-}
-
-function clearDraftAttachments(shouldRender) {
-  draftAttachments = [];
-  elements.taskAttachmentInput.value = "";
-  if (shouldRender !== false) {
-    renderDraftAttachments();
-  }
-}
-
-function renderDraftAttachments() {
-  if (!draftAttachments.length) {
-    elements.draftAttachmentList.innerHTML = "<div class=\"empty\">No attachments selected yet.</div>";
-    return;
-  }
-
-  elements.draftAttachmentList.innerHTML = draftAttachments
-    .map(
-      (attachment) => `
-        <div class="attachment-item">
-          <span>${escapeHtml(attachment.name)} (${formatFileSize(Number(attachment.size) || 0)})</span>
-          <button class="secondary" type="button" data-action="remove-draft-attachment" data-attachment-id="${attachment.id}">Remove</button>
-        </div>
-      `
-    )
-    .join("");
-}
-
-async function sendInternalMessage(senderRole) {
-  const isManagerSender = senderRole === "manager";
-  if (isManagerSender && !isManagerSession()) {
-    alert("Only managers can send manager messages.");
-    return;
-  }
-  if (!isManagerSender && !isEmployeeSession()) {
-    alert("Only employees can send employee messages.");
-    return;
-  }
-
-  const employeeId = isManagerSender
-    ? elements.managerMessageEmployeeSelect.value
-    : state.session.employeeId;
-  const taskId = isManagerSender
-    ? elements.managerMessageTaskSelect.value
-    : elements.employeeMessageTaskSelect.value;
-  const inputElement = isManagerSender ? elements.managerMessageInput : elements.employeeMessageInput;
-  const content = inputElement.value.trim();
-
-  if (!employeeId) {
-    alert("Please choose an employee.");
-    return;
-  }
-
-  if (!content) {
-    alert("Message cannot be empty.");
-    return;
-  }
-
-  if (!getEmployeeById(employeeId)) {
-    alert("Invalid employee selection.");
-    return;
-  }
-
-  if (taskId) {
-    const task = getTaskById(taskId);
-    if (!task || task.assigneeId !== employeeId) {
-      alert("Selected task does not belong to this employee.");
-      return;
-    }
-  }
-  try {
-    await apiRequest("/messages", {
-      method: "POST",
-      requiresAuth: true,
-      body: {
-        employeeId,
-        taskId: taskId || null,
-        content
-      }
-    });
-
-    inputElement.value = "";
-    await refreshWorkspaceFromApi(false);
-    saveState();
-    render();
-  } catch (error) {
-    alert(error.message || "Unable to send message right now.");
-  }
-}
-
-async function addVendor() {
-  if (!isManagerSession()) {
-    alert("Only managers can add vendors.");
-    return;
-  }
-
-  const name = elements.vendorName.value.trim();
-  const contactEmail = normalizeEmail(elements.vendorContactEmail.value);
-  const goods = parseGoodsList(elements.vendorGoods.value);
-  const defaultCostPrice = Number(elements.vendorDefaultCostPrice.value);
-
-  if (!name || !goods.length || !Number.isFinite(defaultCostPrice) || defaultCostPrice < 0) {
-    alert("Vendor name, goods, and valid default cost price are required.");
-    return;
-  }
-
-  const duplicate = state.vendors.some(
-    (vendor) => vendor.name.trim().toLowerCase() === name.trim().toLowerCase()
-  );
-  if (duplicate) {
-    alert("A vendor with that name already exists.");
-    return;
-  }
-  try {
-    await apiRequest("/vendors", {
-      method: "POST",
-      requiresAuth: true,
-      body: {
-        name,
-        contactEmail,
-        goods,
-        defaultCostPrice
-      }
-    });
-
-    elements.vendorForm.reset();
-    await refreshWorkspaceFromApi(false);
-    saveState();
-    render();
-  } catch (error) {
-    alert(error.message || "Unable to add vendor right now.");
-  }
-}
-
-async function addPurchaseOrder() {
-  if (!isManagerSession()) {
-    alert("Only managers can create purchase orders.");
-    return;
-  }
-
-  const vendorId = elements.poVendorSelect.value;
-  const poNumber = elements.poNumber.value.trim();
-  const goods = elements.poGoods.value.trim();
-  const quantity = Math.max(1, Number(elements.poQuantity.value) || 1);
-  const costPrice = Number(elements.poCostPrice.value);
-  const raisedAtRaw = elements.poRaisedAt.value;
-  const expectedAtRaw = elements.poExpectedAt.value;
-  const status = elements.poStatus.value;
-
-  if (!vendorId || !poNumber || !goods || !raisedAtRaw || !Number.isFinite(costPrice) || costPrice < 0) {
-    alert("Vendor, PO number, goods, raised date, and valid cost price are required.");
-    return;
-  }
-
-  const vendor = getVendorById(vendorId);
-  if (!vendor) {
-    alert("Selected vendor does not exist.");
-    return;
-  }
-
-  const duplicatePoNumber = state.purchaseOrders.some(
-    (po) => po.poNumber.trim().toLowerCase() === poNumber.trim().toLowerCase()
-  );
-  if (duplicatePoNumber) {
-    alert("That PO number already exists.");
-    return;
-  }
-
-  const raisedAtDate = new Date(`${raisedAtRaw}T00:00:00`);
-  if (Number.isNaN(raisedAtDate.getTime())) {
-    alert("Invalid raised date.");
-    return;
-  }
-
-  let expectedAt = null;
-  if (expectedAtRaw) {
-    const expectedDate = new Date(`${expectedAtRaw}T00:00:00`);
-    if (Number.isNaN(expectedDate.getTime())) {
-      alert("Invalid expected date.");
-      return;
-    }
-    expectedAt = expectedDate.toISOString();
-  }
-  try {
-    await apiRequest("/purchase-orders", {
-      method: "POST",
-      requiresAuth: true,
-      body: {
-        vendorId,
-        poNumber,
-        goods,
-        quantity,
-        costPrice,
-        raisedAt: raisedAtDate.toISOString(),
-        expectedAt,
-        status
-      }
-    });
-
-    elements.poForm.reset();
-    setDefaultPoRaisedDate();
-    prefillPoCostPriceFromVendor(true);
-    await refreshWorkspaceFromApi(false);
-    saveState();
-    render();
-  } catch (error) {
-    alert(error.message || "Unable to create purchase order right now.");
-  }
-}
-
-async function sendVendorAlert() {
-  if (!isManagerSession()) {
-    alert("Only managers can send vendor alerts.");
-    return;
-  }
-
-  const vendorId = elements.vendorAlertVendorSelect.value;
-  const poId = elements.vendorAlertPoSelect.value;
-  const priority = elements.vendorAlertPriority.value;
-  const message = elements.vendorAlertMessage.value.trim();
-
-  if (!vendorId || !message) {
-    alert("Vendor and alert message are required.");
-    return;
-  }
-
-  const vendor = getVendorById(vendorId);
-  if (!vendor) {
-    alert("Selected vendor does not exist.");
-    return;
-  }
-
-  if (poId) {
-    const po = getPurchaseOrderById(poId);
-    if (!po || po.vendorId !== vendorId) {
-      alert("Selected PO does not belong to this vendor.");
-      return;
-    }
-  }
-  try {
-    await apiRequest("/vendor-alerts", {
-      method: "POST",
-      requiresAuth: true,
-      body: {
-        vendorId,
-        poId: poId || null,
-        priority,
-        message
-      }
-    });
-
-    elements.vendorAlertMessage.value = "";
-    await refreshWorkspaceFromApi(false);
-    saveState();
-    render();
-  } catch (error) {
-    alert(error.message || "Unable to send vendor alert right now.");
-  }
-}
-
-function render() {
-  renderAuthState();
-  if (!isAuthenticated()) {
-    return;
-  }
-
-  renderRolePanels();
-  renderEmployeeSelectors();
-  renderVendorSelectors();
-  renderEmployees();
-  renderDraftAttachments();
-  renderManagerDashboard();
-  renderEmployeeView();
-  renderVendorAssessment();
-  renderCalendar();
-  elements.autoOpenWhatsApp.checked = Boolean(state.settings.autoOpenWhatsApp);
-}
-
-function renderAuthState() {
-  const authenticated = isAuthenticated();
-  elements.loginPanel.classList.toggle("hidden", authenticated);
-  elements.workspaceShell.classList.toggle("hidden", !authenticated);
-  elements.sessionInfo.classList.toggle("hidden", !authenticated);
-
-  if (!authenticated) {
-    elements.sessionLabel.textContent = "";
-    return;
-  }
-
-  if (isManagerSession()) {
-    const managerEmail = normalizeEmail((state.session && state.session.email) || "manager@taskapp.local");
-    elements.sessionLabel.textContent = `Signed in as Manager (${managerEmail})`;
-  } else {
-    const employee = getSessionEmployee();
-    const display = employee
-      ? `${employee.name} (${normalizeEmail(employee.email)})`
-      : "Employee";
-    elements.sessionLabel.textContent = `Signed in as ${display}`;
-  }
-}
-
-function renderRolePanels() {
-  if (!isAuthenticated()) {
-    return;
-  }
-
-  const managerAccess = isManagerSession();
-  if (!managerAccess) {
-    state.settings.activeRole = "employee";
-  }
-
-  const activeRole = state.settings.activeRole;
-
-  elements.managerViewBtn.classList.toggle("hidden", !managerAccess);
-  elements.vendorViewBtn.classList.toggle("hidden", !managerAccess);
-
-  elements.managerViewBtn.classList.toggle("active", managerAccess && activeRole === "manager");
-  elements.employeeViewBtn.classList.toggle("active", activeRole === "employee");
-  elements.vendorViewBtn.classList.toggle("active", managerAccess && activeRole === "vendor");
-
-  elements.managerPanel.classList.toggle("active", managerAccess && activeRole === "manager");
-  elements.employeePanel.classList.toggle("active", activeRole === "employee");
-  elements.vendorPanel.classList.toggle("active", managerAccess && activeRole === "vendor");
-}
-
-function renderEmployeeSelectors() {
-  const managerAccess = isManagerSession();
-  const sessionEmployee = getSessionEmployee();
-  const selectableEmployees = managerAccess
-    ? state.employees
-    : sessionEmployee
-      ? [sessionEmployee]
-      : [];
-
-  if (!selectableEmployees.length) {
-    elements.taskAssignee.innerHTML = "<option value=\"\">No employees available</option>";
-    elements.employeeSelectDashboard.innerHTML = "<option value=\"\">No employees available</option>";
-    elements.managerMessageEmployeeSelect.innerHTML = "<option value=\"\">No employees available</option>";
-    elements.employeeMessageTaskSelect.innerHTML = "<option value=\"\">No task context</option>";
-    elements.managerMessageTaskSelect.innerHTML = "<option value=\"\">No task context</option>";
-    return;
-  }
-
-  const scopedOptions = selectableEmployees
-    .map(
-      (employee) =>
-        `<option value="${employee.id}">${escapeHtml(employee.name)} (${escapeHtml(employee.email)})</option>`
-    )
-    .join("");
-
-  const allOptions = state.employees
-    .map(
-      (employee) =>
-        `<option value="${employee.id}">${escapeHtml(employee.name)} (${escapeHtml(employee.email)})</option>`
-    )
-    .join("");
-
-  elements.taskAssignee.innerHTML = managerAccess ? allOptions : scopedOptions;
-  elements.employeeSelectDashboard.innerHTML = scopedOptions;
-  elements.managerMessageEmployeeSelect.innerHTML = managerAccess ? allOptions : scopedOptions;
-
-  if (managerAccess) {
-    if (
-      !state.settings.selectedEmployeeId ||
-      !state.employees.some((employee) => employee.id === state.settings.selectedEmployeeId)
-    ) {
-      state.settings.selectedEmployeeId = state.employees[0].id;
-    }
-
-    if (
-      !state.settings.managerMessageEmployeeId ||
-      !state.employees.some((employee) => employee.id === state.settings.managerMessageEmployeeId)
-    ) {
-      state.settings.managerMessageEmployeeId = state.employees[0].id;
-    }
-
-    elements.employeeSelectDashboard.disabled = false;
-    elements.employeeSelectDashboard.value = state.settings.selectedEmployeeId;
-    elements.managerMessageEmployeeSelect.value = state.settings.managerMessageEmployeeId;
-
-    if (!elements.taskAssignee.value || !state.employees.some((employee) => employee.id === elements.taskAssignee.value)) {
-      elements.taskAssignee.value = state.employees[0].id;
-    }
-  } else {
-    const ownId = sessionEmployee ? sessionEmployee.id : selectableEmployees[0].id;
-    state.settings.selectedEmployeeId = ownId;
-    state.settings.managerMessageEmployeeId = ownId;
-
-    elements.employeeSelectDashboard.disabled = true;
-    elements.employeeSelectDashboard.value = ownId;
-    elements.managerMessageEmployeeSelect.value = ownId;
-    elements.taskAssignee.value = ownId;
-  }
-}
-
-function renderEmployees() {
-  if (!state.employees.length) {
-    elements.employeeList.innerHTML = "<div class=\"empty\">No employees added yet.</div>";
-    return;
-  }
-
-  elements.employeeList.innerHTML = state.employees
-    .map(
-      (employee) => `
-        <div class="employee-card">
-          <div><strong>${escapeHtml(employee.name)}</strong></div>
-          <div class="meta">Email: ${escapeHtml(employee.email)}</div>
-          <div class="meta">WhatsApp: ${escapeHtml(employee.phone)}</div>
-          <div class="meta">Added: ${formatDateTime(employee.createdAt)}</div>
-        </div>
-      `
-    )
-    .join("");
-}
-
-function renderManagerDashboard() {
-  if (!isManagerSession()) {
-    elements.urgencySummary.innerHTML = "";
-    elements.managerTaskList.innerHTML = "<div class=\"empty\">Manager access required.</div>";
-    elements.employeeAnalyticsList.innerHTML = "<div class=\"empty\">Manager access required.</div>";
-    elements.managerConversation.innerHTML = "<div class=\"empty\">Manager access required.</div>";
-    return;
-  }
-
-  renderUrgencySummary();
-  renderManagerTasks();
-  renderEmployeeAnalytics();
-  renderManagerMessaging();
-}
-
-function renderUrgencySummary() {
-  const pendingTasks = state.tasks.filter((task) => task.status === "Pending");
-
-  const counts = {
-    Low: pendingTasks.filter((task) => task.urgency === "Low").length,
-    Medium: pendingTasks.filter((task) => task.urgency === "Medium").length,
-    High: pendingTasks.filter((task) => task.urgency === "High").length,
-    Critical: pendingTasks.filter((task) => task.urgency === "Critical").length
-  };
-
-  elements.urgencySummary.innerHTML = `
-    <span class="pill low">Low: ${counts.Low}</span>
-    <span class="pill medium">Medium: ${counts.Medium}</span>
-    <span class="pill high">High: ${counts.High}</span>
-    <span class="pill critical">Critical: ${counts.Critical}</span>
-  `;
-}
-
-function renderManagerTasks() {
-  if (!state.tasks.length) {
-    elements.managerTaskList.innerHTML = "<div class=\"empty\">No tasks assigned yet.</div>";
-    return;
-  }
-
-  const sortedTasks = [...state.tasks].sort(compareTasksForPriority);
-  elements.managerTaskList.innerHTML = sortedTasks
-    .map((task) => {
-      const employee = getEmployeeById(task.assigneeId);
-      const urgencyClass = task.status === "Completed" ? "completed" : task.urgency.toLowerCase();
-      const canAct = task.status !== "Completed" && isManagerSession();
-      return `
-        <div class="task-card ${urgencyClass}">
-          <div class="task-top">
-            <div>
-              <p class="task-title">${escapeHtml(task.title)}</p>
-              <div class="meta">Employee: ${escapeHtml(employee ? employee.name : "Unknown")}</div>
-              <div class="meta">Due: ${formatDateTime(task.dueAt)}</div>
-              <div class="meta">Urgency: ${escapeHtml(task.urgency)}</div>
-              <div class="meta">Status: ${escapeHtml(task.status)}</div>
-              <div class="meta">Next reminder: ${task.nextReminderAt ? formatDateTime(task.nextReminderAt) : "Not scheduled"}</div>
-              ${
-                task.description
-                  ? `<div class="meta">Details: ${escapeHtml(task.description)}</div>`
-                  : ""
-              }
-              ${renderTaskAttachments(task)}
-            </div>
-            <span class="pill ${urgencyClass}">${escapeHtml(task.status === "Completed" ? "Completed" : task.urgency)}</span>
-          </div>
-          <div class="task-actions">
-            <button class="muted" data-action="manager-whatsapp" data-task-id="${task.id}">Open WhatsApp</button>
-            <button class="warning" data-action="manager-reminder" data-task-id="${task.id}" ${canAct ? "" : "disabled"}>Send Reminder Now</button>
-            <button data-action="manager-complete" data-task-id="${task.id}" ${canAct ? "" : "disabled"}>Mark Complete</button>
-          </div>
-        </div>
-      `;
-    })
-    .join("");
-}
-
-function renderEmployeeAnalytics() {
-  if (!state.employees.length) {
-    elements.employeeAnalyticsList.innerHTML = "<div class=\"empty\">Add employees to generate analytics.</div>";
-    return;
-  }
-
-  elements.employeeAnalyticsList.innerHTML = state.employees
-    .map((employee) => {
-      const metrics = computeEmployeeAnalytics(employee.id);
-      return `
-        <div class="analytics-card">
-          <div class="analytics-title">${escapeHtml(employee.name)}</div>
-          <div class="analytics-metrics">
-            <div class="metric-chip">Assigned: <strong>${metrics.assigned}</strong></div>
-            <div class="metric-chip">Completed: <strong>${metrics.completed}</strong></div>
-            <div class="metric-chip">Pending: <strong>${metrics.pending}</strong></div>
-            <div class="metric-chip">Overdue: <strong>${metrics.overdue}</strong></div>
-            <div class="metric-chip">On-time: <strong>${metrics.onTime}</strong></div>
-            <div class="metric-chip">Late: <strong>${metrics.late}</strong></div>
-            <div class="metric-chip">Completion rate: <strong>${metrics.completionRate}%</strong></div>
-            <div class="metric-chip">On-time rate: <strong>${metrics.onTimeRate}%</strong></div>
-            <div class="metric-chip">Avg close time: <strong>${metrics.avgCompletionHours}</strong></div>
-          </div>
-        </div>
-      `;
-    })
-    .join("");
-}
-
-function computeEmployeeAnalytics(employeeId) {
-  const now = Date.now();
-  const employeeTasks = state.tasks.filter((task) => task.assigneeId === employeeId);
-  const completedTasks = employeeTasks.filter((task) => task.status === "Completed");
-  const pendingTasks = employeeTasks.filter((task) => task.status !== "Completed");
-
-  let onTime = 0;
-  let late = 0;
-  const completionDurations = [];
-
-  for (const task of completedTasks) {
-    const dueAt = new Date(task.dueAt).getTime();
-    const completedAt = new Date(task.completedAt).getTime();
-    const createdAt = new Date(task.createdAt).getTime();
-
-    if (Number.isFinite(dueAt) && Number.isFinite(completedAt) && completedAt <= dueAt) {
-      onTime += 1;
-    } else {
-      late += 1;
-    }
-
-    if (Number.isFinite(createdAt) && Number.isFinite(completedAt) && completedAt >= createdAt) {
-      completionDurations.push((completedAt - createdAt) / (1000 * 60 * 60));
-    }
-  }
-
-  const overdue = pendingTasks.filter((task) => new Date(task.dueAt).getTime() < now).length;
-  const completionRate = employeeTasks.length
-    ? Math.round((completedTasks.length / employeeTasks.length) * 100)
-    : 0;
-  const onTimeRate = completedTasks.length
-    ? Math.round((onTime / completedTasks.length) * 100)
-    : 0;
-  const avgCompletionHours = completionDurations.length
-    ? `${(completionDurations.reduce((sum, value) => sum + value, 0) / completionDurations.length).toFixed(1)}h`
-    : "-";
-
-  return {
-    assigned: employeeTasks.length,
-    completed: completedTasks.length,
-    pending: pendingTasks.length,
-    overdue,
-    onTime,
-    late,
-    completionRate,
-    onTimeRate,
-    avgCompletionHours
-  };
-}
-
-function renderManagerMessaging() {
-  if (!isManagerSession()) {
-    elements.managerMessageTaskSelect.innerHTML = "<option value=\"\">No task context</option>";
-    elements.managerConversation.innerHTML = "<div class=\"empty\">Manager access required.</div>";
-    return;
-  }
-
-  const employeeId = state.settings.managerMessageEmployeeId;
-  const hasEmployee = Boolean(employeeId && getEmployeeById(employeeId));
-
-  if (!hasEmployee) {
-    elements.managerMessageTaskSelect.innerHTML = "<option value=\"\">No task context</option>";
-    elements.managerConversation.innerHTML = "<div class=\"empty\">Choose an employee to start messaging.</div>";
-    return;
-  }
-
-  const tasksForEmployee = state.tasks
-    .filter((task) => task.assigneeId === employeeId)
-    .sort(compareTasksForPriority);
-
-  const previousSelection = elements.managerMessageTaskSelect.value;
-  const options = [
-    "<option value=\"\">General (No specific task)</option>",
-    ...tasksForEmployee.map(
-      (task) =>
-        `<option value="${task.id}">${escapeHtml(task.title)} (${escapeHtml(task.status)})</option>`
-    )
-  ];
-  elements.managerMessageTaskSelect.innerHTML = options.join("");
-  if (previousSelection && tasksForEmployee.some((task) => task.id === previousSelection)) {
-    elements.managerMessageTaskSelect.value = previousSelection;
-  } else {
-    elements.managerMessageTaskSelect.value = "";
-  }
-
-  const messages = getMessagesByEmployee(employeeId);
-  renderConversation(elements.managerConversation, messages, "No internal messages for this employee yet.");
-}
-
-function renderEmployeeView() {
-  renderEmployeeTasks();
-  renderEmployeeNotifications();
-  renderEmployeeMessaging();
-}
-
-function renderEmployeeTasks() {
-  const employeeId = state.settings.selectedEmployeeId;
-  if (!employeeId) {
-    elements.employeeTaskList.innerHTML = "<div class=\"empty\">Select an employee to view assigned tasks.</div>";
-    return;
-  }
-
-  const employeeTasks = state.tasks
-    .filter((task) => task.assigneeId === employeeId)
-    .sort(compareTasksForPriority);
-
-  if (!employeeTasks.length) {
-    elements.employeeTaskList.innerHTML = "<div class=\"empty\">No tasks assigned to this employee yet.</div>";
-    return;
-  }
-
-  const employeeSession = getSessionEmployee();
-  const canUseEmployeeActions =
-    isEmployeeSession() && employeeSession && employeeSession.id === employeeId;
-
-  elements.employeeTaskList.innerHTML = employeeTasks
-    .map((task) => {
-      const urgencyClass = task.status === "Completed" ? "completed" : task.urgency.toLowerCase();
-      return `
-        <div class="task-card ${urgencyClass}">
-          <div class="task-top">
-            <div>
-              <p class="task-title">${escapeHtml(task.title)}</p>
-              <div class="meta">Due: ${formatDateTime(task.dueAt)}</div>
-              <div class="meta">Urgency: ${escapeHtml(task.urgency)}</div>
-              <div class="meta">Status: ${escapeHtml(task.status)}</div>
-              <div class="meta">Reminder cycle: every ${escapeHtml(String(task.reminderEveryMinutes))} minutes</div>
-              ${
-                task.description
-                  ? `<div class="meta">Details: ${escapeHtml(task.description)}</div>`
-                  : ""
-              }
-              ${renderTaskAttachments(task)}
-            </div>
-            <span class="pill ${urgencyClass}">${escapeHtml(task.status === "Completed" ? "Completed" : task.urgency)}</span>
-          </div>
-          <div class="task-actions">
-            <button class="muted" data-action="employee-whatsapp" data-task-id="${task.id}" ${canUseEmployeeActions ? "" : "disabled"}>Open WhatsApp</button>
-            <button data-action="employee-complete" data-task-id="${task.id}" ${task.status === "Completed" || !canUseEmployeeActions ? "disabled" : ""}>Mark Complete</button>
-          </div>
-        </div>
-      `;
-    })
-    .join("");
-}
-
-function renderEmployeeNotifications() {
-  const employeeId = state.settings.selectedEmployeeId;
-  if (!employeeId) {
-    elements.employeeNotifications.innerHTML = "<div class=\"empty\">Select an employee to view notifications.</div>";
-    return;
-  }
-
-  const notes = state.notifications
-    .filter((notification) => notification.employeeId === employeeId)
-    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
-    .slice(0, 80);
-
-  if (!notes.length) {
-    elements.employeeNotifications.innerHTML = "<div class=\"empty\">No notifications yet for this employee.</div>";
-    return;
-  }
-
-  elements.employeeNotifications.innerHTML = notes
-    .map((notification) => {
-      const channelClass = notification.channel === "whatsapp" ? "whatsapp" : "";
-      const channelLabel = notification.channel === "whatsapp" ? "WhatsApp" : "In-App";
-      const actionLink =
-        notification.meta && notification.meta.url
-          ? `<a class="action-link" href="${notification.meta.url}" target="_blank" rel="noopener noreferrer">Send via WhatsApp</a>`
-          : "";
-      return `
-        <div class="note-card ${channelClass}">
-          <div><strong>${escapeHtml(channelLabel)}</strong>: ${escapeHtml(notification.message)}</div>
-          <div class="meta">${formatDateTime(notification.createdAt)}</div>
-          ${actionLink}
-        </div>
-      `;
-    })
-    .join("");
-}
-
-function renderEmployeeMessaging() {
-  const employeeId = state.settings.selectedEmployeeId;
-  const employee = getEmployeeById(employeeId);
-  const canSendAsEmployee = isEmployeeSession() && employee && state.session.employeeId === employee.id;
-
-  if (!employee) {
-    elements.employeeMessageTaskSelect.innerHTML = "<option value=\"\">No task context</option>";
-    elements.employeeConversation.innerHTML = "<div class=\"empty\">Select an employee to view messages.</div>";
-    return;
-  }
-
-  const employeeTasks = state.tasks
-    .filter((task) => task.assigneeId === employeeId)
-    .sort(compareTasksForPriority);
-
-  const previousSelection = elements.employeeMessageTaskSelect.value;
-  const options = [
-    "<option value=\"\">General (No specific task)</option>",
-    ...employeeTasks.map(
-      (task) =>
-        `<option value="${task.id}">${escapeHtml(task.title)} (${escapeHtml(task.status)})</option>`
-    )
-  ];
-  elements.employeeMessageTaskSelect.innerHTML = options.join("");
-  if (previousSelection && employeeTasks.some((task) => task.id === previousSelection)) {
-    elements.employeeMessageTaskSelect.value = previousSelection;
-  } else {
-    elements.employeeMessageTaskSelect.value = "";
-  }
-
-  elements.employeeMessageTaskSelect.disabled = !canSendAsEmployee;
-  elements.employeeMessageInput.disabled = !canSendAsEmployee;
-  const submitButton = elements.employeeMessageForm.querySelector("button[type='submit']");
-  if (submitButton) {
-    submitButton.disabled = !canSendAsEmployee;
-  }
-
-  const messages = getMessagesByEmployee(employeeId);
-  renderConversation(elements.employeeConversation, messages, "No messages yet.");
-}
-
-function renderConversation(container, messages, emptyMessage) {
-  if (!messages.length) {
-    container.innerHTML = `<div class="empty">${escapeHtml(emptyMessage)}</div>`;
-    return;
-  }
-
-  container.innerHTML = messages
-    .map((message) => {
-      const roleLabel = message.senderRole === "manager" ? "Manager" : "Employee";
-      const task = message.taskId ? getTaskById(message.taskId) : null;
-      const taskMeta = task ? `<div class="meta">Task: ${escapeHtml(task.title)}</div>` : "";
-      return `
-        <div class="message-bubble ${message.senderRole}">
-          <div class="message-role">${roleLabel} · ${formatDateTime(message.createdAt)}</div>
-          ${taskMeta}
-          <div class="message-text">${escapeHtml(message.content)}</div>
-        </div>
-      `;
-    })
-    .join("");
-
-  container.scrollTop = container.scrollHeight;
-}
-
-function renderVendorAssessment() {
-  if (!isManagerSession()) {
-    elements.vendorList.innerHTML = "<div class=\"empty\">Manager access required.</div>";
-    elements.poList.innerHTML = "<div class=\"empty\">Manager access required.</div>";
-    elements.vendorAlertList.innerHTML = "<div class=\"empty\">Manager access required.</div>";
-    return;
-  }
-
+function renderAll() {
+  renderPages();
+  renderSelectors();
+  renderTasks();
   renderVendors();
+  renderProducts();
+  renderSalesMetrics();
+  renderOrders();
+  renderPoMetrics();
   renderPurchaseOrders();
-  renderVendorAlerts();
+  renderAdminMetrics();
+  renderAdminUsers();
+  renderActivityLogs();
 }
 
-function renderVendorSelectors() {
-  const managerAccess = isManagerSession();
-  const hasVendors = state.vendors.length > 0;
+function renderSelectors() {
+  const employeeOptions = APP_STATE.workspace.employees.map((employee) => `<option value="${employee.id}">${escapeHtml(employee.name)}</option>`).join("");
+  const vendorOptions = APP_STATE.workspace.vendors.map((vendor) => `<option value="${vendor.id}">${escapeHtml(vendor.name)}</option>`).join("");
+  const clientOptions = APP_STATE.workspace.clients.map((client) => `<option value="${client.id}">${escapeHtml(client.name)}</option>`).join("");
+  const productOptions = APP_STATE.workspace.products.map((product) => `<option value="${product.id}">${escapeHtml(product.name)} (${escapeHtml(product.itemCode)})</option>`).join("");
+  const employeeOptionsWithBlank = `<option value="">Unassigned</option>${employeeOptions}`;
 
-  elements.vendorForm.querySelector("button[type='submit']").disabled = !managerAccess;
-  elements.poForm.querySelector("button[type='submit']").disabled = !managerAccess;
-  elements.vendorAlertForm.querySelector("button[type='submit']").disabled = !managerAccess;
+  el.taskAssignee.innerHTML = employeeOptions || "<option value=\"\">No employees</option>";
+  el.orderEmployeeId.innerHTML = employeeOptions || "<option value=\"\">No employees</option>";
+  el.productVendorId.innerHTML = vendorOptions || "<option value=\"\">No vendors</option>";
+  el.orderClientId.innerHTML = clientOptions || "<option value=\"\">No clients</option>";
+  el.orderProductId.innerHTML = productOptions || "<option value=\"\">No products</option>";
+  el.poVendorId.innerHTML = vendorOptions || "<option value=\"\">No vendors</option>";
+  el.poAssignedEmployeeId.innerHTML = employeeOptionsWithBlank;
 
-  if (!hasVendors) {
-    elements.poVendorSelect.innerHTML = "<option value=\"\">No vendors available</option>";
-    elements.vendorAlertVendorSelect.innerHTML = "<option value=\"\">No vendors available</option>";
-    elements.vendorAlertPoSelect.innerHTML = "<option value=\"\">No PO context</option>";
-    return;
-  }
+  const canManage = isPrivileged();
+  setDisabled([el.employeeName, el.employeeEmail, el.employeePassword, el.employeePhone], !canManage);
+  el.employeeForm.querySelector("button").disabled = !canManage;
+  setDisabled([el.taskTitle, el.taskAssignee, el.taskDescription, el.taskDueAt, el.taskUrgency, el.taskReminderMinutes, el.taskPersistentReminders], !canManage);
+  el.taskForm.querySelector("button").disabled = !canManage;
+  setDisabled([el.vendorName, el.vendorContactEmail, el.vendorContactPhone, el.vendorCity, el.vendorStatus, el.vendorGoods, el.vendorDefaultCostPrice], !canManage);
+  el.vendorForm.querySelector("button").disabled = !canManage;
+  setDisabled([el.productVendorId, el.productName, el.productItemCode, el.productQuantity, el.productCategory, el.productStockStatus], !canManage);
+  el.productForm.querySelector("button").disabled = !canManage;
+  setDisabled([el.clientName, el.clientEmail, el.clientPhone, el.clientCity, el.clientStatus], !canManage);
+  el.clientForm.querySelector("button").disabled = !canManage;
+  setDisabled([el.orderId, el.orderClientId, el.orderProductId, el.orderEmployeeId, el.orderQuantity, el.orderDueDate, el.orderStatus], !canManage);
+  el.orderForm.querySelector("button").disabled = !canManage;
 
-  const vendorOptions = state.vendors
-    .map((vendor) => `<option value="${vendor.id}">${escapeHtml(vendor.name)}</option>`)
-    .join("");
+  const canManagePo = Boolean(APP_STATE.session?.token);
+  setDisabled(
+    [el.poNumber, el.poVendorId, el.poProductName, el.poItemCode, el.poGoods, el.poQuantity, el.poUnitPrice, el.poTotalAmount, el.poOrderDate, el.poExpectedDeliveryDate, el.poStatus, el.poAssignedEmployeeId, el.poNotes],
+    !canManagePo
+  );
+  el.purchaseOrderForm.querySelector("button").disabled = !canManagePo;
+  if (!isPrivileged()) el.poAssignedEmployeeId.value = APP_STATE.session.user.id;
 
-  const previousPoVendor = elements.poVendorSelect.value;
-  const previousAlertVendor = elements.vendorAlertVendorSelect.value;
-
-  elements.poVendorSelect.innerHTML = vendorOptions;
-  elements.vendorAlertVendorSelect.innerHTML = vendorOptions;
-
-  if (previousPoVendor && state.vendors.some((vendor) => vendor.id === previousPoVendor)) {
-    elements.poVendorSelect.value = previousPoVendor;
-  } else {
-    elements.poVendorSelect.value = state.vendors[0].id;
-  }
-
-  if (previousAlertVendor && state.vendors.some((vendor) => vendor.id === previousAlertVendor)) {
-    elements.vendorAlertVendorSelect.value = previousAlertVendor;
-  } else {
-    elements.vendorAlertVendorSelect.value = state.vendors[0].id;
-  }
-
-  elements.poVendorSelect.disabled = !managerAccess;
-  elements.vendorAlertVendorSelect.disabled = !managerAccess;
-
-  prefillPoCostPriceFromVendor(false);
-  renderVendorAlertPoOptions();
+  el.managerForm.querySelector("button").disabled = !isAdmin();
 }
 
-function renderVendorAlertPoOptions() {
-  const vendorId = elements.vendorAlertVendorSelect.value;
-  const previousPoSelection = elements.vendorAlertPoSelect.value;
-  if (!vendorId) {
-    elements.vendorAlertPoSelect.innerHTML = "<option value=\"\">No PO context</option>";
-    return;
-  }
-
-  const vendorPos = state.purchaseOrders
-    .filter((po) => po.vendorId === vendorId)
-    .sort((a, b) => new Date(b.raisedAt || b.createdAt) - new Date(a.raisedAt || a.createdAt));
-
-  const options = [
-    "<option value=\"\">General Alert (No specific PO)</option>",
-    ...vendorPos.map(
-      (po) =>
-        `<option value="${po.id}">${escapeHtml(po.poNumber)} · ${escapeHtml(po.goods)} (${escapeHtml(po.status)})</option>`
-    )
-  ];
-  elements.vendorAlertPoSelect.innerHTML = options.join("");
-
-  if (previousPoSelection && vendorPos.some((po) => po.id === previousPoSelection)) {
-    elements.vendorAlertPoSelect.value = previousPoSelection;
-  } else {
-    elements.vendorAlertPoSelect.value = "";
-  }
+function setDisabled(nodes, disabled) {
+  nodes.forEach((node) => { if (node) node.disabled = disabled; });
 }
 
-function prefillPoCostPriceFromVendor(force) {
-  const vendor = getVendorById(elements.poVendorSelect.value);
-  if (!vendor) {
+function renderTasks() {
+  const q = el.taskSearch.value.trim().toLowerCase();
+  const rows = APP_STATE.workspace.tasks.filter((task) => `${task.title} ${task.description} ${task.status}`.toLowerCase().includes(q));
+  if (!rows.length) {
+    el.taskList.innerHTML = "<div class='empty'>No tasks found.</div>";
     return;
   }
-
-  if (force || !elements.poCostPrice.value) {
-    elements.poCostPrice.value = String(Number(vendor.defaultCostPrice || 0).toFixed(2));
-  }
+  el.taskList.innerHTML = `
+    <table><thead><tr><th>Title</th><th>Assignee</th><th>Due</th><th>Status</th><th>Urgency</th></tr></thead><tbody>
+      ${rows.map((task) => {
+        const assignee = APP_STATE.workspace.employees.find((employee) => employee.id === task.assigneeId);
+        const canEdit = isPrivileged() || APP_STATE.session.user.id === task.assigneeId;
+        return `
+          <tr>
+            <td>${escapeHtml(task.title)}</td>
+            <td>${escapeHtml(assignee ? assignee.name : "-")}</td>
+            <td>${formatDateTime(task.dueAt)}</td>
+            <td><select data-task-id="${task.id}" ${canEdit ? "" : "disabled"}>
+              ${["Pending", "In Progress", "Completed"].map((status) => `<option ${task.status === status ? "selected" : ""}>${status}</option>`).join("")}
+            </select></td>
+            <td><span class="pill ${task.urgency.toLowerCase()}">${escapeHtml(task.urgency)}</span></td>
+          </tr>
+        `;
+      }).join("")}
+    </tbody></table>
+  `;
 }
 
 function renderVendors() {
-  if (!state.vendors.length) {
-    elements.vendorList.innerHTML = "<div class=\"empty\">No vendors added yet.</div>";
+  const q = el.vendorSearch.value.trim().toLowerCase();
+  const rows = APP_STATE.workspace.vendors.filter((vendor) => `${vendor.name} ${vendor.city} ${vendor.status}`.toLowerCase().includes(q));
+  el.vendorCards.innerHTML = rows.length ? rows.map((vendor) => `
+    <article class="mini-card">
+      <h4>${escapeHtml(vendor.name)}</h4>
+      <p>${escapeHtml(vendor.city || "-")} • ${escapeHtml(vendor.status || "Active")}</p>
+      <p>${escapeHtml(vendor.contactEmail || "-")} • ${escapeHtml(vendor.contactPhone || "-")}</p>
+      <p>Products supplied: <strong>${Number(vendor.productsSupplied || 0)}</strong></p>
+    </article>
+  `).join("") : "<div class='empty'>No vendors found.</div>";
+}
+
+function renderProducts() {
+  const q = el.productSearch.value.trim().toLowerCase();
+  const rows = APP_STATE.workspace.products.filter((product) => `${product.name} ${product.itemCode} ${product.category}`.toLowerCase().includes(q));
+  el.productTable.innerHTML = rows.length ? `
+    <table><thead><tr><th>Name</th><th>Item Code</th><th>Vendor</th><th>Quantity</th><th>Category</th><th>Stock</th></tr></thead><tbody>
+      ${rows.map((product) => `
+        <tr>
+          <td>${escapeHtml(product.name)}</td>
+          <td>${escapeHtml(product.itemCode)}</td>
+          <td>${escapeHtml(product.vendorName)}</td>
+          <td>${product.quantity}</td>
+          <td>${escapeHtml(product.category)}</td>
+          <td>${escapeHtml(product.stockStatus)}</td>
+        </tr>
+      `).join("")}
+    </tbody></table>
+  ` : "<div class='empty'>No products found.</div>";
+}
+
+function renderSalesMetrics() {
+  const analytics = APP_STATE.workspace.salesAnalytics || {};
+  const cards = [
+    { label: "Total Orders", value: analytics.totalOrders || 0 },
+    { label: "Pending Orders", value: analytics.pendingOrders || 0 },
+    { label: "Delivered Orders", value: analytics.deliveredOrders || 0 },
+    { label: "Revenue Summary", value: formatCurrency(analytics.revenueSummary || 0) }
+  ];
+  el.salesMetricsCards.innerHTML = cards.map((card) => `<article class="mini-card"><p>${card.label}</p><h4>${card.value}</h4></article>`).join("");
+}
+
+function renderOrders() {
+  const q = el.orderSearch.value.trim().toLowerCase();
+  const rows = APP_STATE.workspace.orders.filter((order) => `${order.orderId} ${order.clientName} ${order.itemCode}`.toLowerCase().includes(q));
+  if (!rows.length) {
+    el.orderTable.innerHTML = "<div class='empty'>No orders found.</div>";
     return;
   }
-
-  elements.vendorList.innerHTML = state.vendors
-    .map((vendor) => {
-      const vendorPos = state.purchaseOrders.filter((po) => po.vendorId === vendor.id);
-      const openPos = vendorPos.filter((po) => normalizeStatusClass(po.status) === "open").length;
-      const totalValue = vendorPos.reduce(
-        (sum, po) => sum + (Number(po.quantity) || 0) * (Number(po.costPrice) || 0),
-        0
-      );
-
-      const goodsChips = vendor.goods
-        .map((item) => `<span class="mini-chip">${escapeHtml(item)}</span>`)
-        .join("");
-
-      return `
-        <div class="vendor-card">
-          <div><strong>${escapeHtml(vendor.name)}</strong></div>
-          <div class="meta">Contact: ${escapeHtml(vendor.contactEmail || "-")}</div>
-          <div class="meta">Default Cost Price: ${formatMoney(vendor.defaultCostPrice)}</div>
-          <div class="meta">POs Raised: ${vendorPos.length} | Open: ${openPos} | Total Value: ${formatMoney(totalValue)}</div>
-          <div class="chip-row">${goodsChips || "<span class=\"mini-chip\">No goods listed</span>"}</div>
-        </div>
-      `;
-    })
-    .join("");
-}
-
-function renderPurchaseOrders() {
-  if (!state.purchaseOrders.length) {
-    elements.poList.innerHTML = "<div class=\"empty\">No purchase orders raised yet.</div>";
-    return;
-  }
-
-  const sorted = [...state.purchaseOrders].sort(
-    (a, b) => new Date(b.raisedAt || b.createdAt) - new Date(a.raisedAt || a.createdAt)
-  );
-
-  elements.poList.innerHTML = sorted
-    .map((po) => {
-      const vendor = getVendorById(po.vendorId);
-      const statusClass = normalizeStatusClass(po.status);
-      const total = (Number(po.quantity) || 0) * (Number(po.costPrice) || 0);
-      return `
-        <div class="po-card">
-          <div><strong>${escapeHtml(po.poNumber)}</strong> · ${escapeHtml(vendor ? vendor.name : "Unknown Vendor")}</div>
-          <div class="meta">Goods: ${escapeHtml(po.goods)} | Qty: ${escapeHtml(String(po.quantity))}</div>
-          <div class="meta">Cost Price: ${formatMoney(po.costPrice)} | Total: ${formatMoney(total)}</div>
-          <div class="meta">Raised: ${formatDate(po.raisedAt)} | Expected: ${po.expectedAt ? formatDate(po.expectedAt) : "-"}</div>
-          <div class="chip-row">
-            <span class="mini-chip ${statusClass}">${escapeHtml(po.status)}</span>
-          </div>
-        </div>
-      `;
-    })
-    .join("");
-}
-
-function renderVendorAlerts() {
-  if (!state.vendorAlerts.length) {
-    elements.vendorAlertList.innerHTML = "<div class=\"empty\">No vendor alerts sent yet.</div>";
-    return;
-  }
-
-  const sorted = [...state.vendorAlerts].sort(
-    (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
-  );
-
-  elements.vendorAlertList.innerHTML = sorted
-    .map((alertItem) => {
-      const vendor = getVendorById(alertItem.vendorId);
-      const po = alertItem.poId ? getPurchaseOrderById(alertItem.poId) : null;
-      const priorityClass = String(alertItem.priority || "Medium").toLowerCase();
-      return `
-        <div class="alert-card">
-          <div><strong>${escapeHtml(vendor ? vendor.name : "Unknown Vendor")}</strong></div>
-          <div class="meta">PO Context: ${escapeHtml(po ? po.poNumber : "General Alert")}</div>
-          <div class="meta">Sent By: ${escapeHtml(alertItem.sentBy || "-")} · ${formatDateTime(alertItem.createdAt)}</div>
-          <div class="chip-row">
-            <span class="mini-chip ${priorityClass}">${escapeHtml(alertItem.priority || "Medium")}</span>
-          </div>
-          <div class="meta">${escapeHtml(alertItem.message)}</div>
-        </div>
-      `;
-    })
-    .join("");
-}
-
-function renderCalendar() {
-  const monthDate = getCalendarMonthDate();
-  const year = monthDate.getFullYear();
-  const month = monthDate.getMonth();
-  const monthStart = new Date(year, month, 1);
-  const monthEnd = new Date(year, month + 1, 0);
-
-  const label = monthDate.toLocaleString(undefined, { month: "long", year: "numeric" });
-  elements.calendarMonthLabel.textContent = label;
-  elements.calendarGrid.innerHTML = "";
-
-  for (const dayName of WEEK_DAYS) {
-    const weekday = document.createElement("div");
-    weekday.className = "weekday-cell";
-    weekday.textContent = dayName;
-    elements.calendarGrid.appendChild(weekday);
-  }
-
-  const taskByDate = buildTaskDateMap();
-  const leadingBlanks = monthStart.getDay();
-  const daysInMonth = monthEnd.getDate();
-  const daysInPrevMonth = new Date(year, month, 0).getDate();
-
-  for (let i = leadingBlanks - 1; i >= 0; i -= 1) {
-    const day = daysInPrevMonth - i;
-    const date = new Date(year, month - 1, day);
-    elements.calendarGrid.appendChild(buildDayCell(date, taskByDate, true));
-  }
-
-  for (let day = 1; day <= daysInMonth; day += 1) {
-    const date = new Date(year, month, day);
-    elements.calendarGrid.appendChild(buildDayCell(date, taskByDate, false));
-  }
-
-  const totalCells = elements.calendarGrid.children.length - WEEK_DAYS.length;
-  const remaining = (7 - (totalCells % 7)) % 7;
-  for (let day = 1; day <= remaining; day += 1) {
-    const date = new Date(year, month + 1, day);
-    elements.calendarGrid.appendChild(buildDayCell(date, taskByDate, true));
-  }
-
-  renderCalendarDayDetails(taskByDate);
-}
-
-function buildDayCell(date, taskByDate, isOutside) {
-  const key = toDateKey(date);
-  const tasks = taskByDate.get(key) || [];
-  const isToday = key === todayDateKey();
-  const isSelected = key === state.settings.calendarSelectedDate;
-
-  const cell = document.createElement("button");
-  cell.type = "button";
-  cell.className = `day-cell${isOutside ? " outside" : ""}${isToday ? " today" : ""}${isSelected ? " selected" : ""}`;
-  cell.dataset.date = key;
-
-  const number = document.createElement("div");
-  number.className = "day-number";
-  number.textContent = String(date.getDate());
-  cell.appendChild(number);
-
-  const visibleTasks = tasks.slice(0, 3);
-  for (const task of visibleTasks) {
-    const chip = document.createElement("span");
-    const urgencyClass = task.status === "Completed" ? "completed" : task.urgency.toLowerCase();
-    chip.className = `calendar-chip ${urgencyClass}`;
-    chip.textContent = task.title;
-    cell.appendChild(chip);
-  }
-
-  if (tasks.length > 3) {
-    const more = document.createElement("span");
-    more.className = "calendar-chip completed";
-    more.textContent = `+${tasks.length - 3} more`;
-    cell.appendChild(more);
-  }
-
-  return cell;
-}
-
-function renderCalendarDayDetails(taskByDate) {
-  const selectedDate = state.settings.calendarSelectedDate || todayDateKey();
-  const tasks = (taskByDate.get(selectedDate) || []).sort(compareTasksForPriority);
-
-  if (!tasks.length) {
-    elements.calendarDayDetails.innerHTML = `
-      <strong>${escapeHtml(selectedDate)}</strong>
-      <div class="empty">No tasks due on this date.</div>
-    `;
-    return;
-  }
-
-  const rows = tasks
-    .map((task) => {
-      const employee = getEmployeeById(task.assigneeId);
-      const attachments = Array.isArray(task.attachments) ? task.attachments.length : 0;
-      return `
-        <div class="task-card ${task.status === "Completed" ? "completed" : task.urgency.toLowerCase()}">
-          <div class="task-title">${escapeHtml(task.title)}</div>
-          <div class="meta">Employee: ${escapeHtml(employee ? employee.name : "Unknown")}</div>
-          <div class="meta">Urgency: ${escapeHtml(task.urgency)} | Status: ${escapeHtml(task.status)}</div>
-          <div class="meta">Due at: ${formatDateTime(task.dueAt)}</div>
-          <div class="meta">Attachments: ${attachments}</div>
-        </div>
-      `;
-    })
-    .join("");
-
-  elements.calendarDayDetails.innerHTML = `
-    <strong>${escapeHtml(selectedDate)}</strong>
-    <div class="stack">${rows}</div>
+  el.orderTable.innerHTML = `
+    <table><thead><tr><th>Order</th><th>Client</th><th>Product</th><th>Item Code</th><th>Qty</th><th>Due</th><th>Status</th><th>Assigned</th></tr></thead><tbody>
+      ${rows.map((order) => {
+        const canEdit = isPrivileged() || APP_STATE.session.user.id === order.assignedEmployeeId;
+        const dueClass = order.isOverdue ? "overdue" : order.isDueSoon ? "due-soon" : "";
+        return `
+          <tr>
+            <td>${escapeHtml(order.orderId)}</td>
+            <td>${escapeHtml(order.clientName)}</td>
+            <td>${escapeHtml(order.productName)}</td>
+            <td>${escapeHtml(order.itemCode)}</td>
+            <td>${order.quantity}</td>
+            <td><span class="${dueClass}">${formatDateTime(order.dueDate)}</span></td>
+            <td><select data-order-id="${order.id}" ${canEdit ? "" : "disabled"}>
+              ${["Pending", "Processing", "Delivered", "Cancelled"].map((status) => `<option ${order.deliveryStatus === status ? "selected" : ""}>${status}</option>`).join("")}
+            </select></td>
+            <td>${escapeHtml(order.assignedEmployeeName)}</td>
+          </tr>
+        `;
+      }).join("")}
+    </tbody></table>
   `;
 }
 
-
-function getTaskById(taskId) {
-  return state.tasks.find((task) => task.id === taskId);
-}
-
-function getEmployeeById(employeeId) {
-  return state.employees.find((employee) => employee.id === employeeId);
-}
-
-function getVendorById(vendorId) {
-  return state.vendors.find((vendor) => vendor.id === vendorId);
-}
-
-function getPurchaseOrderById(poId) {
-  return state.purchaseOrders.find((po) => po.id === poId);
-}
-
-function getMessagesByEmployee(employeeId) {
-  return state.messages
-    .filter((message) => message.employeeId === employeeId)
-    .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
-}
-
-function buildTaskDateMap() {
-  const taskByDate = new Map();
-  for (const task of state.tasks) {
-    const key = toDateKey(new Date(task.dueAt));
-    if (!taskByDate.has(key)) {
-      taskByDate.set(key, []);
-    }
-    taskByDate.get(key).push(task);
-  }
-
-  for (const list of taskByDate.values()) {
-    list.sort(compareTasksForPriority);
-  }
-
-  return taskByDate;
-}
-
-function compareTasksForPriority(a, b) {
-  if (a.status !== b.status) {
-    return a.status === "Pending" ? -1 : 1;
-  }
-  const urgencyDelta = (URGENCY_WEIGHT[b.urgency] || 0) - (URGENCY_WEIGHT[a.urgency] || 0);
-  if (urgencyDelta !== 0) {
-    return urgencyDelta;
-  }
-  return new Date(a.dueAt) - new Date(b.dueAt);
-}
-
-function getCalendarMonthDate() {
-  const date = new Date();
-  date.setDate(1);
-  date.setMonth(date.getMonth() + Number(state.settings.calendarMonthOffset || 0));
-  return date;
-}
-
-function buildWhatsAppUrl(employee, task, note) {
-  const phone = normalizePhone(employee.phone);
-  if (!phone) {
-    return null;
-  }
-
-  const lines = [
-    `Hello ${employee.name},`,
-    `Task: ${task.title}`,
-    `Urgency: ${task.urgency.toUpperCase()}`,
-    `Due: ${formatDateTime(task.dueAt)}`,
-    note,
-    "Please update progress in the Task Assignment app."
+function renderPoMetrics() {
+  const analytics = APP_STATE.workspace.poAnalytics || {};
+  const cards = [
+    { label: "Total POs", value: analytics.totalPurchaseOrders || 0 },
+    { label: "Pending POs", value: analytics.pendingPurchaseOrders || 0 },
+    { label: "Delivered POs", value: analytics.deliveredPurchaseOrders || 0 },
+    { label: "Overdue POs", value: analytics.overduePurchaseOrders || 0 },
+    { label: "PO Value", value: formatCurrency(analytics.purchaseOrderValue || 0) }
   ];
-
-  const text = encodeURIComponent(lines.filter(Boolean).join("\n"));
-  return `https://wa.me/${phone}?text=${text}`;
+  el.poMetricsCards.innerHTML = cards.map((card) => `<article class="mini-card"><p>${card.label}</p><h4>${card.value}</h4></article>`).join("");
 }
 
-function generateId() {
-  if (window.crypto && typeof window.crypto.randomUUID === "function") {
-    return window.crypto.randomUUID();
+function renderPurchaseOrders() {
+  const q = el.poSearch.value.trim().toLowerCase();
+  const rows = APP_STATE.workspace.purchaseOrders.filter((po) => `${po.poNumber} ${po.productName} ${po.itemCode} ${po.goods}`.toLowerCase().includes(q));
+  if (!rows.length) {
+    el.poTable.innerHTML = "<div class='empty'>No purchase orders found.</div>";
+    return;
   }
-  return `id-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  el.poTable.innerHTML = `
+    <table><thead><tr><th>PO</th><th>Product</th><th>Item</th><th>Qty</th><th>Total</th><th>Expected</th><th>Status</th><th>Assigned</th></tr></thead><tbody>
+      ${rows.map((po) => {
+        const canEdit = isPrivileged() || APP_STATE.session.user.id === po.assignedEmployeeId;
+        const dueClass = po.isOverdue ? "overdue" : po.isDueSoon ? "due-soon" : "";
+        return `
+          <tr data-po-row-id="${po.id}">
+            <td><button data-po-view-id="${po.id}" class="mini">${escapeHtml(po.poNumber)}</button></td>
+            <td>${escapeHtml(po.productName)}</td>
+            <td>${escapeHtml(po.itemCode)}</td>
+            <td>${Number(po.quantity || 0)}</td>
+            <td>${formatCurrency(po.totalAmount || 0)}</td>
+            <td><span class="${dueClass}">${formatDateTime(po.expectedDeliveryDate)}</span></td>
+            <td><select data-po-id="${po.id}" ${canEdit ? "" : "disabled"}>
+              ${["Draft", "Approved", "Ordered", "In Transit", "Delivered", "Cancelled"].map((status) => `<option ${po.status === status ? "selected" : ""}>${status}</option>`).join("")}
+            </select></td>
+            <td>${escapeHtml(po.assignedEmployeeName || "-")}</td>
+          </tr>
+        `;
+      }).join("")}
+    </tbody></table>
+  `;
 }
 
-function normalizePhone(phone) {
-  return String(phone || "").replace(/[^\d]/g, "");
+function renderAdminMetrics() {
+  if (!isAdmin() || !APP_STATE.workspace.adminMetrics) {
+    el.adminMetricsCards.innerHTML = "<div class='empty'>Admin metrics are visible to admin users only.</div>";
+    return;
+  }
+  const m = APP_STATE.workspace.adminMetrics;
+  const cards = [
+    { label: "Employees", value: m.employeeCount || 0 },
+    { label: "Tasks", value: m.taskCount || 0 },
+    { label: "Pending Tasks", value: m.pendingTaskCount || 0 },
+    { label: "Pending Orders", value: m.pendingOrderCount || 0 },
+    { label: "Vendors", value: m.vendorCount || 0 },
+    { label: "Clients", value: m.clientCount || 0 },
+    { label: "Products", value: m.productCount || 0 }
+  ];
+  el.adminMetricsCards.innerHTML = cards.map((card) => `<article class="mini-card"><p>${card.label}</p><h4>${card.value}</h4></article>`).join("");
 }
 
-function normalizeEmail(email) {
-  return String(email || "").trim().toLowerCase();
+function renderAdminUsers() {
+  if (!isAdmin()) {
+    el.adminUsersTable.innerHTML = "<div class='empty'>Admin access required.</div>";
+    return;
+  }
+  if (!APP_STATE.workspace.users.length) {
+    el.adminUsersTable.innerHTML = "<div class='empty'>No accounts found.</div>";
+    return;
+  }
+  el.adminUsersTable.innerHTML = `
+    <table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+      ${APP_STATE.workspace.users.map((user) => `
+        <tr>
+          <td>${escapeHtml(user.name || "-")}</td>
+          <td>${escapeHtml(user.email)}</td>
+          <td>${escapeHtml(user.role)}</td>
+          <td>${user.isActive ? "Active" : "Disabled"}</td>
+          <td>
+            <button data-action="reset-password" data-user-id="${user.id}" class="mini">Reset Password</button>
+            <button data-action="toggle-status" data-user-id="${user.id}" data-active="${user.isActive ? "1" : "0"}" class="mini">${user.isActive ? "Disable" : "Enable"}</button>
+          </td>
+        </tr>
+      `).join("")}
+    </tbody></table>
+  `;
 }
 
-function parseGoodsList(raw) {
-  return String(raw || "")
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
+function renderActivityLogs() {
+  if (!isAdmin()) {
+    el.activityLogsTable.innerHTML = "<div class='empty'>Admin access required.</div>";
+    return;
+  }
+  const rows = APP_STATE.workspace.activityLogs || [];
+  if (!rows.length) {
+    el.activityLogsTable.innerHTML = "<div class='empty'>No activity logs found.</div>";
+    return;
+  }
+  el.activityLogsTable.innerHTML = `
+    <table><thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Entity</th></tr></thead><tbody>
+      ${rows.map((row) => `
+        <tr>
+          <td>${formatDateTime(row.createdAt)}</td>
+          <td>${escapeHtml(row.actorName || row.actorRole || "-")}</td>
+          <td>${escapeHtml(row.action)}</td>
+          <td>${escapeHtml(`${row.entityType || "-"} ${row.entityId || ""}`.trim())}</td>
+        </tr>
+      `).join("")}
+    </tbody></table>
+  `;
 }
 
-function loadState() {
+async function onCreateEmployee(event) {
+  event.preventDefault();
+  if (!isPrivileged()) return;
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) {
-      return cloneDefaultState();
-    }
-    const parsed = JSON.parse(raw);
-    return {
-      session: parsed.session || null,
-      employees: Array.isArray(parsed.employees) ? parsed.employees : [],
-      tasks: Array.isArray(parsed.tasks) ? parsed.tasks : [],
-      notifications: Array.isArray(parsed.notifications) ? parsed.notifications : [],
-      messages: Array.isArray(parsed.messages) ? parsed.messages : [],
-      vendors: Array.isArray(parsed.vendors) ? parsed.vendors : [],
-      purchaseOrders: Array.isArray(parsed.purchaseOrders) ? parsed.purchaseOrders : [],
-      vendorAlerts: Array.isArray(parsed.vendorAlerts) ? parsed.vendorAlerts : [],
-      settings: {
-        ...cloneDefaultState().settings,
-        ...(parsed.settings || {})
-      }
-    };
+    await api("/employees", { method: "POST", body: { name: el.employeeName.value, email: el.employeeEmail.value, password: el.employeePassword.value, phone: el.employeePhone.value } });
+    await refreshWorkspace();
+    renderAll();
+    el.employeeForm.reset();
+    showToast("Employee created", "success");
   } catch (error) {
-    console.error("Failed to load state:", error);
-    return cloneDefaultState();
+    showToast(error.message, "error");
   }
 }
 
-function cloneDefaultState() {
-  return JSON.parse(JSON.stringify(DEFAULT_STATE));
+async function onCreateTask(event) {
+  event.preventDefault();
+  if (!isPrivileged()) return;
+  try {
+    await api("/tasks", {
+      method: "POST",
+      body: {
+        title: el.taskTitle.value,
+        description: el.taskDescription.value,
+        assigneeId: el.taskAssignee.value,
+        dueAt: new Date(el.taskDueAt.value).toISOString(),
+        urgency: el.taskUrgency.value,
+        reminderEveryMinutes: Number(el.taskReminderMinutes.value || 60),
+        persistentReminders: Boolean(el.taskPersistentReminders.checked),
+        attachments: []
+      }
+    });
+    await refreshWorkspace();
+    renderTasks();
+    el.taskForm.reset();
+    showToast("Task created", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
 }
 
-function saveState() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+async function onTaskStatusChange(event) {
+  const select = event.target.closest("select[data-task-id]");
+  if (!select) return;
+  try {
+    await api(`/tasks/${encodeURIComponent(select.dataset.taskId)}/status`, { method: "PUT", body: { status: select.value } });
+    await refreshWorkspace();
+    renderTasks();
+    showToast("Task status updated", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function onCreateVendor(event) {
+  event.preventDefault();
+  if (!isPrivileged()) return;
+  try {
+    await api("/vendors", {
+      method: "POST",
+      body: {
+        name: el.vendorName.value,
+        contactEmail: el.vendorContactEmail.value,
+        contactPhone: el.vendorContactPhone.value,
+        city: el.vendorCity.value,
+        status: el.vendorStatus.value,
+        goods: el.vendorGoods.value.split(",").map((item) => item.trim()).filter(Boolean),
+        defaultCostPrice: Number(el.vendorDefaultCostPrice.value || 0)
+      }
+    });
+    await refreshWorkspace();
+    renderAll();
+    el.vendorForm.reset();
+    showToast("Vendor saved", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function onCreateProduct(event) {
+  event.preventDefault();
+  if (!isPrivileged()) return;
+  try {
+    await api("/products", {
+      method: "POST",
+      body: {
+        vendorId: el.productVendorId.value,
+        name: el.productName.value,
+        itemCode: el.productItemCode.value,
+        quantity: Number(el.productQuantity.value || 0),
+        category: el.productCategory.value,
+        stockStatus: el.productStockStatus.value
+      }
+    });
+    await refreshWorkspace();
+    renderAll();
+    el.productForm.reset();
+    showToast("Product saved", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function onCreateClient(event) {
+  event.preventDefault();
+  if (!isPrivileged()) return;
+  try {
+    await api("/clients", {
+      method: "POST",
+      body: {
+        name: el.clientName.value,
+        contactEmail: el.clientEmail.value,
+        contactPhone: el.clientPhone.value,
+        city: el.clientCity.value,
+        status: el.clientStatus.value
+      }
+    });
+    await refreshWorkspace();
+    renderAll();
+    el.clientForm.reset();
+    showToast("Client saved", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function onCreateOrder(event) {
+  event.preventDefault();
+  if (!isPrivileged()) return;
+  try {
+    await api("/orders", {
+      method: "POST",
+      body: {
+        orderId: el.orderId.value,
+        clientId: el.orderClientId.value,
+        productId: el.orderProductId.value,
+        quantity: Number(el.orderQuantity.value || 1),
+        dueDate: new Date(el.orderDueDate.value).toISOString(),
+        deliveryStatus: el.orderStatus.value,
+        assignedEmployeeId: el.orderEmployeeId.value
+      }
+    });
+    await refreshWorkspace();
+    renderOrders();
+    renderSalesMetrics();
+    el.orderForm.reset();
+    showToast("Order saved", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function onOrderStatusChange(event) {
+  const select = event.target.closest("select[data-order-id]");
+  if (!select) return;
+  try {
+    await api(`/orders/${encodeURIComponent(select.dataset.orderId)}/status`, { method: "PUT", body: { deliveryStatus: select.value } });
+    await refreshWorkspace();
+    renderOrders();
+    renderSalesMetrics();
+    showToast("Order status updated", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function onCreatePurchaseOrder(event) {
+  event.preventDefault();
+  try {
+    await api("/purchase-orders", {
+      method: "POST",
+      body: {
+        poNumber: el.poNumber.value,
+        vendorId: el.poVendorId.value,
+        productName: el.poProductName.value,
+        itemCode: el.poItemCode.value,
+        goods: el.poGoods.value,
+        quantity: Number(el.poQuantity.value || 1),
+        unitPrice: Number(el.poUnitPrice.value || 0),
+        totalAmount: Number(el.poTotalAmount.value || 0),
+        orderDate: new Date(el.poOrderDate.value).toISOString(),
+        expectedDeliveryDate: new Date(el.poExpectedDeliveryDate.value).toISOString(),
+        status: el.poStatus.value,
+        assignedEmployeeId: el.poAssignedEmployeeId.value,
+        notes: el.poNotes.value
+      }
+    });
+    await refreshWorkspace();
+    renderPoMetrics();
+    renderPurchaseOrders();
+    el.purchaseOrderForm.reset();
+    showToast("Purchase order saved", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function onPurchaseOrderStatusChange(event) {
+  const select = event.target.closest("select[data-po-id]");
+  if (!select) return;
+  try {
+    await api(`/purchase-orders/${encodeURIComponent(select.dataset.poId)}/status`, { method: "PUT", body: { status: select.value } });
+    await refreshWorkspace();
+    renderPoMetrics();
+    renderPurchaseOrders();
+    showToast("PO status updated", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function onPurchaseOrderClick(event) {
+  const button = event.target.closest("button[data-po-view-id]");
+  if (!button) return;
+  try {
+    const payload = await api(`/purchase-orders/${encodeURIComponent(button.dataset.poViewId)}`);
+    const po = payload.purchaseOrder;
+    const related = payload.relatedSalesOrders || [];
+    const timeline = payload.timeline || [];
+    el.poDetailPanel.innerHTML = `
+      <div class="stack">
+        <p><strong>PO:</strong> ${escapeHtml(po.poNumber)}</p>
+        <p><strong>Status:</strong> ${escapeHtml(po.status)}</p>
+        <p><strong>Vendor:</strong> ${escapeHtml(String(po.vendorId || "-"))}</p>
+        <p><strong>Product:</strong> ${escapeHtml(po.productName)}</p>
+        <p><strong>Item Code:</strong> ${escapeHtml(po.itemCode)}</p>
+        <p><strong>Expected Delivery:</strong> ${formatDateTime(po.expectedDeliveryDate)}</p>
+        <p><strong>Notes:</strong> ${escapeHtml(po.notes || "-")}</p>
+      </div>
+      <h4>Linked Sales Orders</h4>
+      ${related.length ? `<ul>${related.map((order) => `<li>${escapeHtml(order.orderId)} • ${escapeHtml(order.clientName)} • ${escapeHtml(order.deliveryStatus)}</li>`).join("")}</ul>` : "<div class='empty'>No related orders.</div>"}
+      <h4>Timeline</h4>
+      ${timeline.length ? `<ul>${timeline.map((item) => `<li>${formatDateTime(item.createdAt)} • ${escapeHtml(item.actorName || item.actorRole || "-")} • ${escapeHtml(item.action)}</li>`).join("")}</ul>` : "<div class='empty'>No timeline entries.</div>"}
+    `;
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function onCreateManager(event) {
+  event.preventDefault();
+  if (!isAdmin()) return;
+  try {
+    const payload = await api("/admin/managers", {
+      method: "POST",
+      body: { name: el.managerName.value, email: el.managerEmail.value, phone: el.managerPhone.value, password: el.managerPassword.value }
+    });
+    await refreshWorkspace();
+    renderAdminUsers();
+    el.managerForm.reset();
+    showToast(`Manager created. Password: ${payload.credentials.password}`, "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function onAdminUserAction(event) {
+  const button = event.target.closest("button[data-action]");
+  if (!button || !isAdmin()) return;
+  const userId = button.dataset.userId;
+  try {
+    if (button.dataset.action === "reset-password") {
+      const payload = await api(`/admin/users/${encodeURIComponent(userId)}/reset-password`, { method: "POST", body: {} });
+      showToast(`New password: ${payload.credentials.password}`, "success");
+    } else {
+      const active = button.dataset.active !== "1";
+      await api(`/admin/users/${encodeURIComponent(userId)}/account-status`, { method: "POST", body: { isActive: active } });
+      showToast("Account status updated", "success");
+    }
+    await refreshWorkspace();
+    renderAdminUsers();
+    renderAdminMetrics();
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+function escapeHtml(value) {
+  return String(value || "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll("\"", "&quot;").replaceAll("'", "&#39;");
 }
 
 function formatDateTime(value) {
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return "-";
-  }
-  return date.toLocaleString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit"
-  });
+  if (Number.isNaN(date.getTime())) return "-";
+  return date.toLocaleString(undefined, { year: "numeric", month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit" });
 }
 
-function formatDate(value) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return "-";
-  }
-  return date.toLocaleDateString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "2-digit"
-  });
-}
-
-function formatFileSize(bytes) {
-  if (!Number.isFinite(bytes) || bytes < 0) {
-    return "0 B";
-  }
-  if (bytes < 1024) {
-    return `${bytes} B`;
-  }
-  if (bytes < 1024 * 1024) {
-    return `${(bytes / 1024).toFixed(1)} KB`;
-  }
-  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
-}
-
-function formatMoney(value) {
-  const number = Number(value);
-  if (!Number.isFinite(number)) {
-    return "₹0.00";
-  }
+function formatCurrency(value) {
+  const number = Number(value || 0);
+  if (!Number.isFinite(number)) return "₹0.00";
   return `₹${number.toFixed(2)}`;
-}
-
-function toDateKey(date) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
-function todayDateKey() {
-  return toDateKey(new Date());
-}
-
-function toDatetimeLocalValue(date) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  const hours = String(date.getHours()).padStart(2, "0");
-  const minutes = String(date.getMinutes()).padStart(2, "0");
-  return `${year}-${month}-${day}T${hours}:${minutes}`;
-}
-
-function toDateInputValue(date) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
-function truncateText(value, maxChars) {
-  const text = String(value || "");
-  if (text.length <= maxChars) {
-    return text;
-  }
-  return `${text.slice(0, maxChars - 1)}…`;
-}
-
-function renderTaskAttachments(task) {
-  const attachments = Array.isArray(task.attachments)
-    ? task.attachments.filter((attachment) => attachment && attachment.dataUrl)
-    : [];
-
-  if (!attachments.length) {
-    return "";
-  }
-
-  const links = attachments
-    .map(
-      (attachment) =>
-        `<a href="${escapeHtml(attachment.dataUrl)}" download="${escapeHtml(attachment.name || "attachment")}">${escapeHtml(attachment.name || "attachment")}</a>`
-    )
-    .join("");
-
-  return `
-    <div class="attachments">
-      <div class="meta">Attachments (${attachments.length})</div>
-      <div class="attachment-links">${links}</div>
-    </div>
-  `;
-}
-
-function normalizeStatusClass(status) {
-  const value = String(status || "").toLowerCase();
-  if (value.includes("cancel")) {
-    return "cancelled";
-  }
-  if (value.includes("delay")) {
-    return "delayed";
-  }
-  if (value.includes("received") && !value.includes("partial")) {
-    return "received";
-  }
-  return "open";
-}
-
-function slugify(text) {
-  const normalized = String(text || "")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  return normalized || "user";
-}
-
-function escapeHtml(value) {
-  return String(value)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
 }
