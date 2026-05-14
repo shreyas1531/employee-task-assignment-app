@@ -323,19 +323,20 @@ function renderSelectors() {
   el.poVendorId.innerHTML = vendorOptions || "<option value=\"\">No vendors</option>";
   el.poAssignedEmployeeId.innerHTML = employeeOptionsWithBlank;
 
-  const canManage = isPrivileged();
-  setDisabled([el.employeeName, el.employeeEmail, el.employeePassword, el.employeePhone], !canManage);
-  el.employeeForm.querySelector("button").disabled = !canManage;
-  setDisabled([el.taskTitle, el.taskAssignee, el.taskDescription, el.taskDueAt, el.taskUrgency, el.taskReminderMinutes, el.taskPersistentReminders], !canManage);
-  el.taskForm.querySelector("button").disabled = !canManage;
-  setDisabled([el.vendorName, el.vendorContactEmail, el.vendorContactPhone, el.vendorCity, el.vendorStatus, el.vendorGoods, el.vendorDefaultCostPrice], !canManage);
-  el.vendorForm.querySelector("button").disabled = !canManage;
-  setDisabled([el.productVendorId, el.productName, el.productItemCode, el.productQuantity, el.productCategory, el.productStockStatus], !canManage);
-  el.productForm.querySelector("button").disabled = !canManage;
-  setDisabled([el.clientName, el.clientEmail, el.clientPhone, el.clientCity, el.clientStatus], !canManage);
-  el.clientForm.querySelector("button").disabled = !canManage;
-  setDisabled([el.orderId, el.orderClientId, el.orderProductId, el.orderEmployeeId, el.orderQuantity, el.orderDueDate, el.orderStatus], !canManage);
-  el.orderForm.querySelector("button").disabled = !canManage;
+  const canManageEmployeesAndTasks = isPrivileged();
+  const canManageSalesAndVendors = Boolean(APP_STATE.session?.token);
+  setDisabled([el.employeeName, el.employeeEmail, el.employeePassword, el.employeePhone], !canManageEmployeesAndTasks);
+  el.employeeForm.querySelector("button").disabled = !canManageEmployeesAndTasks;
+  setDisabled([el.taskTitle, el.taskAssignee, el.taskDescription, el.taskDueAt, el.taskUrgency, el.taskReminderMinutes, el.taskPersistentReminders], !canManageEmployeesAndTasks);
+  el.taskForm.querySelector("button").disabled = !canManageEmployeesAndTasks;
+  setDisabled([el.vendorName, el.vendorContactEmail, el.vendorContactPhone, el.vendorCity, el.vendorStatus, el.vendorGoods, el.vendorDefaultCostPrice], !canManageSalesAndVendors);
+  el.vendorForm.querySelector("button").disabled = !canManageSalesAndVendors;
+  setDisabled([el.productVendorId, el.productName, el.productItemCode, el.productQuantity, el.productCategory, el.productStockStatus], !canManageSalesAndVendors);
+  el.productForm.querySelector("button").disabled = !canManageSalesAndVendors;
+  setDisabled([el.clientName, el.clientEmail, el.clientPhone, el.clientCity, el.clientStatus], !canManageSalesAndVendors);
+  el.clientForm.querySelector("button").disabled = !canManageSalesAndVendors;
+  setDisabled([el.orderId, el.orderClientId, el.orderProductId, el.orderEmployeeId, el.orderQuantity, el.orderDueDate, el.orderStatus], !canManageSalesAndVendors);
+  el.orderForm.querySelector("button").disabled = !canManageSalesAndVendors;
 
   const canManagePo = Boolean(APP_STATE.session?.token);
   setDisabled(
@@ -621,7 +622,7 @@ async function onTaskStatusChange(event) {
 
 async function onCreateVendor(event) {
   event.preventDefault();
-  if (!isPrivileged()) return;
+  if (!APP_STATE.session?.token) return;
   try {
     await api("/vendors", {
       method: "POST",
@@ -646,7 +647,7 @@ async function onCreateVendor(event) {
 
 async function onCreateProduct(event) {
   event.preventDefault();
-  if (!isPrivileged()) return;
+  if (!APP_STATE.session?.token) return;
   try {
     await api("/products", {
       method: "POST",
@@ -670,7 +671,7 @@ async function onCreateProduct(event) {
 
 async function onCreateClient(event) {
   event.preventDefault();
-  if (!isPrivileged()) return;
+  if (!APP_STATE.session?.token) return;
   try {
     await api("/clients", {
       method: "POST",
@@ -693,7 +694,7 @@ async function onCreateClient(event) {
 
 async function onCreateOrder(event) {
   event.preventDefault();
-  if (!isPrivileged()) return;
+  if (!APP_STATE.session?.token) return;
   try {
     await api("/orders", {
       method: "POST",

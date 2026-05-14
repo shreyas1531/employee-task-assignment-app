@@ -1869,7 +1869,7 @@ class TaskAssignmentAPI < Sinatra::Base
   end
 
   post "/api/products" do
-    current = require_manager_or_admin!
+    current = require_authentication!
     payload = parse_json_body
 
     vendor_id = payload["vendorId"].to_s.strip
@@ -1940,7 +1940,7 @@ class TaskAssignmentAPI < Sinatra::Base
   end
 
   post "/api/clients" do
-    current = require_manager_or_admin!
+    current = require_authentication!
     payload = parse_json_body
     name = sanitize_text(payload["name"], "Client name", required: true, max_length: 200)
     contact_email = normalize_email(payload["contactEmail"])
@@ -2017,7 +2017,7 @@ class TaskAssignmentAPI < Sinatra::Base
   end
 
   post "/api/orders" do
-    current = require_manager_or_admin!
+    current = require_authentication!
     payload = parse_json_body
 
     order_id = sanitize_text(payload["orderId"], "Order ID", required: true, max_length: 80)
@@ -2034,6 +2034,9 @@ class TaskAssignmentAPI < Sinatra::Base
     halt_json(400, error: "Client is required.") if client_id.empty?
     halt_json(400, error: "Product is required.") if product_id.empty?
     halt_json(400, error: "Assigned employee is required.") if assigned_employee_id.empty?
+    if current[:user][:role] == "employee" && assigned_employee_id != current[:user][:id]
+      halt_json(403, error: "Employees can only create orders assigned to themselves.")
+    end
 
     client = db_exec("SELECT id FROM clients WHERE id = $1 LIMIT 1", [client_id]).first
     halt_json(400, error: "Client does not exist.") unless client
@@ -2117,7 +2120,7 @@ class TaskAssignmentAPI < Sinatra::Base
   end
 
   post "/api/vendors" do
-    current = require_manager_or_admin!
+    current = require_authentication!
     payload = parse_json_body
 
     name = sanitize_text(payload["name"], "Vendor name", required: true, max_length: 200)
