@@ -1,6 +1,7 @@
 require "json"
 require "time"
 require "uri"
+require "net/http"
 require "digest"
 require "securerandom"
 require "sinatra/base"
@@ -28,6 +29,7 @@ class TaskAssignmentAPI < Sinatra::Base
   ALERT_PRIORITIES = %w[Low Medium High Critical].freeze
   VENDOR_STATUSES = %w[Active Inactive].freeze
   STOCK_STATUSES = ["In Stock", "Low Stock", "Out of Stock"].freeze
+  PRODUCT_STATUSES = ["Active", "Inactive", "Discontinued"].freeze
   ORDER_STATUSES = %w[Pending Processing Delivered Cancelled].freeze
   class << self
     def runtime_database_url_candidates
@@ -255,6 +257,18 @@ class TaskAssignmentAPI < Sinatra::Base
       value.to_s.gsub(/\D/, "")
     end
 
+    def normalize_phone_number(value)
+      raw = value.to_s.strip
+      return "" if raw.empty?
+      sanitized = raw.gsub(/[^\d+]/, "")
+      sanitized = sanitized.start_with?("+") ? sanitized : "+#{sanitized}"
+      sanitized
+    end
+
+    def valid_phone_number?(value)
+      /\A\+?[1-9][0-9]{7,14}\z/.match?(value.to_s)
+    end
+
     def valid_email?(value)
       /\A[^@\s]+@[^@\s]+\.[^@\s]+\z/.match?(value.to_s)
     end
@@ -348,6 +362,8 @@ class TaskAssignmentAPI < Sinatra::Base
         email: row["email"],
         name: row["full_name"],
         phone: row["phone"],
+        phoneNumber: row["phone_number"] || row["phone"],
+        department: row["department"] || "General",
         role: row["role"],
         isActive: row["is_active"] != "f",
         createdAt: row["created_at"],
@@ -429,10 +445,14 @@ class TaskAssignmentAPI < Sinatra::Base
                  po.unit_price,
                  po.cost_price,
                  po.total_amount,
+                 po.subtotal_amount,
+                 po.tax_amount,
+                 po.grand_total_amount,
                  po.order_date,
                  po.raised_at,
                  po.expected_delivery_date,
                  po.expected_at,
+                 po.delivered_at,
                  po.status,
                  po.assigned_employee_id,
                  u.full_name AS assigned_employee_name,
@@ -512,9 +532,16 @@ class TaskAssignmentAPI < Sinatra::Base
         vendorName: row["vendor_name"] || "",
         name: row["name"],
         itemCode: row["item_code"],
+        sku: row["sku"] || row["item_code"],
         quantity: row["quantity"].to_i,
+        minimumStockThreshold: row["minimum_stock_threshold"].to_i,
+        unitPrice: row["unit_price"].to_f,
         category: row["category"] || "",
         stockStatus: row["stock_status"],
+        status: row["status"] || "Active",
+        description: row["description"] || "",
+        imageUrl: row["image_url"] || "",
+        isLowStock: row["quantity"].to_i <= row["minimum_stock_threshold"].to_i,
         createdAt: row["created_at"],
         updatedAt: row["updated_at"]
       }
@@ -590,6 +617,10 @@ class TaskAssignmentAPI < Sinatra::Base
         assignedEmployeeId: row["assigned_employee_id"],
         assignedEmployeeName: row["assigned_employee_name"] || "",
         notes: row["notes"] || "",
+        subtotalAmount: row["subtotal_amount"]&.to_f || row["total_amount"].to_f,
+        taxAmount: row["tax_amount"]&.to_f || 0.0,
+        grandTotalAmount: row["grand_total_amount"]&.to_f || row["total_amount"].to_f,
+        deliveredAt: row["delivered_at"],
         isOverdue: overdue == true,
         isDueSoon: due_soon == true,
         createdAt: row["created_at"]
@@ -834,7 +865,7 @@ class TaskAssignmentAPI < Sinatra::Base
     end
 
     def build_whatsapp_url(phone:, employee_name:, task_title:, urgency:, due_at:, note:)
-      normalized_phone = normalize_phone(phone)
+      normalized_phone = normalize_phone_number(phone)
       return nil if normalized_phone.empty?
 
       lines = [
@@ -847,6 +878,326 @@ class TaskAssignmentAPI < Sinatra::Base
       ]
       encoded_text = URI.encode_www_form_component(lines.join("\n"))
       "https://wa.me/#{normalized_phone}?text=#{encoded_text}"
+    end
+
+    def whatsapp_enabled?
+      [
+        ENV["TWILIO_ACCOUNT_SID"],
+        ENV["TWILIO_AUTH_TOKEN"],
+        ENV["TWILIO_WHATSAPP_FROM"]
+      ].all? { |value| !value.to_s.strip.empty? }
+    end
+
+    def render_whatsapp_template(template_key, data)
+      templates = {
+        "task_assigned" => "Hello {{employee_name}}, a new task has been assigned to you: {{task_title}}. Due Date: {{due_date}}.",
+        "task_overdue" => "Reminder: Your task '{{task_title}}' is overdue. Please update status immediately.",
+        "task_status_changed" => "Task update for {{employee_name}}: '{{task_title}}' is now {{task_status}}.",
+        "task_due_date_changed" => "Task '{{task_title}}' due date updated to {{due_date}}.",
+        "po_notification" => "A purchase order '{{po_number}}' has been assigned/updated.",
+        "admin_announcement" => "Important announcement: {{announcement}}"
+      }
+      template = templates[template_key] || "{{message}}"
+      rendered = template.dup
+      data.each do |key, value|
+        rendered.gsub!("{{#{key}}}", value.to_s)
+      end
+      rendered
+    end
+
+    def enqueue_whatsapp_notification(employee_id:, template_key:, payload:, dedupe_key:, task_id: nil, purchase_order_id: nil, created_by: nil)
+      return nil unless whatsapp_enabled?
+      queue_row = db_exec(
+        <<~SQL,
+          INSERT INTO whatsapp_notification_queue (
+            id, employee_id, task_id, purchase_order_id, template_key, dedupe_key, message_payload,
+            status, retry_count, max_retries, next_attempt_at, created_by, created_at, updated_at
+          )
+          VALUES (
+            gen_random_uuid(), $1, $2, $3, $4, $5, $6::jsonb,
+            'queued', 0, $7, NOW(), $8, NOW(), NOW()
+          )
+          ON CONFLICT (dedupe_key) DO NOTHING
+          RETURNING id
+        SQL
+        [
+          employee_id,
+          task_id,
+          purchase_order_id,
+          template_key,
+          dedupe_key,
+          JSON.generate(payload),
+          Integer(ENV.fetch("WHATSAPP_MAX_RETRIES", "3")),
+          created_by
+        ]
+      ).first
+      process_whatsapp_queue!(limit: 5)
+      queue_row&.dig("id")
+    end
+
+    def send_twilio_whatsapp_message(to_phone:, message_text:)
+      account_sid = ENV["TWILIO_ACCOUNT_SID"].to_s.strip
+      auth_token = ENV["TWILIO_AUTH_TOKEN"].to_s.strip
+      from_number = ENV["TWILIO_WHATSAPP_FROM"].to_s.strip
+      return [false, nil, "Twilio credentials are missing."] if [account_sid, auth_token, from_number].any?(&:empty?)
+      normalized_to = normalize_phone_number(to_phone)
+      return [false, nil, "Recipient phone number is invalid."] unless valid_phone_number?(normalized_to)
+
+      uri = URI.parse("https://api.twilio.com/2010-04-01/Accounts/#{account_sid}/Messages.json")
+      request = Net::HTTP::Post.new(uri)
+      request.basic_auth(account_sid, auth_token)
+      request.set_form_data(
+        "From" => "whatsapp:#{from_number}",
+        "To" => "whatsapp:#{normalized_to}",
+        "Body" => message_text
+      )
+      response = Net::HTTP.start(uri.host, uri.port, use_ssl: true) { |http| http.request(request) }
+      body = response.body.to_s.strip
+      if response.code.to_i >= 200 && response.code.to_i < 300
+        parsed = JSON.parse(body) rescue {}
+        [true, parsed["sid"], nil]
+      else
+        [false, nil, body.empty? ? "Twilio send failed with status #{response.code}" : body]
+      end
+    rescue StandardError => e
+      [false, nil, e.message]
+    end
+
+    def process_whatsapp_queue!(limit: 10)
+      return unless whatsapp_enabled?
+      pending = db_exec(
+        <<~SQL,
+          SELECT q.id, q.employee_id, q.task_id, q.purchase_order_id, q.template_key, q.message_payload,
+                 q.retry_count, q.max_retries, u.full_name, u.phone, u.phone_number
+          FROM whatsapp_notification_queue q
+          JOIN users u ON u.id = q.employee_id
+          WHERE q.status IN ('queued', 'failed')
+            AND q.next_attempt_at <= NOW()
+            AND q.retry_count <= q.max_retries
+          ORDER BY q.created_at ASC
+          LIMIT $1
+        SQL
+        [limit]
+      )
+      pending.each do |row|
+        payload = parse_json_column(row["message_payload"], {})
+        message_text = render_whatsapp_template(row["template_key"], payload)
+        db_exec(
+          <<~SQL,
+            UPDATE whatsapp_notification_queue
+            SET status = 'processing',
+                last_attempt_at = NOW(),
+                updated_at = NOW()
+            WHERE id = $1
+          SQL
+          [row["id"]]
+        )
+        success, sid, error_text = send_twilio_whatsapp_message(
+          to_phone: row["phone_number"] || row["phone"],
+          message_text: message_text
+        )
+        if success
+          db_exec(
+            <<~SQL,
+              UPDATE whatsapp_notification_queue
+              SET status = 'sent',
+                  provider_message_sid = $1,
+                  last_error = NULL,
+                  updated_at = NOW()
+              WHERE id = $2
+            SQL
+            [sid, row["id"]]
+          )
+          db_exec(
+            <<~SQL,
+              INSERT INTO whatsapp_delivery_logs (
+                id, queue_id, employee_id, template_key, message_text, status, provider_message_sid, metadata, created_at
+              )
+              VALUES (gen_random_uuid(), $1, $2, $3, $4, 'sent', $5, $6::jsonb, NOW())
+            SQL
+            [row["id"], row["employee_id"], row["template_key"], message_text, sid, JSON.generate(payload)]
+          )
+        else
+          next_retry = row["retry_count"].to_i + 1
+          max_retry = row["max_retries"].to_i
+          new_status = next_retry > max_retry ? "failed" : "queued"
+          backoff_minutes = [2**next_retry, 30].min
+          db_exec(
+            <<~SQL,
+              UPDATE whatsapp_notification_queue
+              SET status = $1,
+                  retry_count = $2,
+                  last_error = $3,
+                  next_attempt_at = NOW() + ($4 || ' minutes')::interval,
+                  updated_at = NOW()
+              WHERE id = $5
+            SQL
+            [new_status, next_retry, error_text.to_s[0, 1500], backoff_minutes.to_s, row["id"]]
+          )
+          db_exec(
+            <<~SQL,
+              INSERT INTO whatsapp_delivery_logs (
+                id, queue_id, employee_id, template_key, message_text, status, error_message, metadata, created_at
+              )
+              VALUES (gen_random_uuid(), $1, $2, $3, $4, 'failed', $5, $6::jsonb, NOW())
+            SQL
+            [row["id"], row["employee_id"], row["template_key"], message_text, error_text.to_s[0, 1500], JSON.generate(payload)]
+          )
+        end
+      end
+    end
+
+    def fetch_scoring_weights
+      row = db_exec(
+        <<~SQL
+          SELECT on_time_completion_weight, late_completion_weight, pending_overdue_weight, unfinished_weight
+          FROM performance_scoring_weights
+          ORDER BY updated_at DESC
+          LIMIT 1
+        SQL
+      ).first
+      return { on_time: 10, late: 5, overdue: -8, unfinished: -10 } unless row
+      {
+        on_time: row["on_time_completion_weight"].to_i,
+        late: row["late_completion_weight"].to_i,
+        overdue: row["pending_overdue_weight"].to_i,
+        unfinished: row["unfinished_weight"].to_i
+      }
+    end
+
+    def grade_for_score(score)
+      return "A+" if score >= 80
+      return "A" if score >= 60
+      return "B" if score >= 35
+      return "C" if score >= 15
+      "D"
+    end
+
+    def compute_employee_performance(employee_id:, start_at: nil, end_at: nil)
+      where = ["assignee_id = $1"]
+      params = [employee_id]
+      if start_at
+        where << "created_at >= $#{params.length + 1}"
+        params << start_at
+      end
+      if end_at
+        where << "created_at < $#{params.length + 1}"
+        params << end_at
+      end
+      tasks = db_exec(
+        <<~SQL,
+          SELECT id, title, due_at, created_at, status, completed_at
+          FROM tasks
+          WHERE #{where.join(' AND ')}
+        SQL
+        params
+      ).to_a
+      total = tasks.length
+      completed = tasks.select { |task| task["status"] == "Completed" }
+      pending = tasks.select { |task| task["status"] != "Completed" && task["status"] != "Cancelled" }
+      cancelled = tasks.select { |task| task["status"] == "Cancelled" }
+      now = Time.now.utc
+      on_time = completed.count do |task|
+        completed_at = task["completed_at"] ? Time.parse(task["completed_at"]) : nil
+        due_at = task["due_at"] ? Time.parse(task["due_at"]) : nil
+        completed_at && due_at && completed_at <= due_at
+      end
+      late = completed.length - on_time
+      overdue = pending.count do |task|
+        due_at = task["due_at"] ? Time.parse(task["due_at"]) : nil
+        due_at && due_at < now
+      end
+      unfinished = pending.length
+      completion_percentage = total.zero? ? 0.0 : ((completed.length.to_f / total) * 100.0)
+      completion_hours = completed.map do |task|
+        next nil unless task["completed_at"] && task["created_at"]
+        ((Time.parse(task["completed_at"]) - Time.parse(task["created_at"])) / 3600.0)
+      end.compact
+      avg_hours = completion_hours.empty? ? 0.0 : (completion_hours.sum / completion_hours.length.to_f)
+      weights = fetch_scoring_weights
+      score = (on_time * weights[:on_time]) + (late * weights[:late]) + (overdue * weights[:overdue]) + (unfinished * weights[:unfinished])
+      {
+        employeeId: employee_id,
+        tasksCompletedOnTime: on_time,
+        lateCompletedTasks: late,
+        overdueTasks: overdue,
+        pendingTasks: pending.length,
+        cancelledTasks: cancelled.length,
+        completionPercentage: completion_percentage.round(2),
+        averageCompletionHours: avg_hours.round(2),
+        score: score,
+        grade: grade_for_score(score)
+      }
+    end
+
+    def upsert_performance_snapshot(employee_id:, period_type:, period_start:, period_end:, stats:)
+      db_exec(
+        <<~SQL,
+          INSERT INTO employee_performance_snapshots (
+            id, employee_id, period_type, period_start, period_end, tasks_completed_on_time, late_completed_tasks,
+            overdue_tasks, pending_tasks, cancelled_tasks, completion_percentage, average_completion_hours,
+            score, grade, computed_at
+          )
+          VALUES (
+            gen_random_uuid(), $1, $2, $3, $4, $5, $6,
+            $7, $8, $9, $10, $11, $12, $13, NOW()
+          )
+        SQL
+        [
+          employee_id,
+          period_type,
+          period_start,
+          period_end,
+          stats[:tasksCompletedOnTime],
+          stats[:lateCompletedTasks],
+          stats[:overdueTasks],
+          stats[:pendingTasks],
+          stats[:cancelledTasks],
+          stats[:completionPercentage],
+          stats[:averageCompletionHours],
+          stats[:score],
+          stats[:grade]
+        ]
+      )
+    end
+
+    def record_stock_movement(product_id:, movement_type:, quantity_change:, reference_type:, reference_id:, notes:, actor_id:)
+      product_row = db_exec(
+        "SELECT id, quantity FROM products WHERE id = $1 LIMIT 1",
+        [product_id]
+      ).first
+      return nil unless product_row
+      previous_quantity = product_row["quantity"].to_i
+      next_quantity = previous_quantity + quantity_change.to_i
+      next_quantity = 0 if next_quantity.negative?
+      stock_status = if next_quantity <= 0
+        "Out of Stock"
+      elsif next_quantity <= 5
+        "Low Stock"
+      else
+        "In Stock"
+      end
+      db_exec(
+        <<~SQL,
+          UPDATE products
+          SET quantity = $1,
+              stock_status = $2,
+              updated_at = NOW()
+          WHERE id = $3
+        SQL
+        [next_quantity, stock_status, product_id]
+      )
+      db_exec(
+        <<~SQL,
+          INSERT INTO product_stock_movements (
+            id, product_id, movement_type, quantity_change, previous_quantity, new_quantity,
+            reference_type, reference_id, notes, created_by, created_at
+          )
+          VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+        SQL
+        [product_id, movement_type, quantity_change, previous_quantity, next_quantity, reference_type, reference_id, notes, actor_id]
+      )
+      { previousQuantity: previous_quantity, newQuantity: next_quantity, stockStatus: stock_status }
     end
 
     def send_frontend_file(filename, mime_type)
@@ -959,7 +1310,7 @@ class TaskAssignmentAPI < Sinatra::Base
 
     employees = db_exec(
       <<~SQL
-        SELECT id, email, full_name, phone, role, created_at, updated_at
+        SELECT id, email, full_name, phone, phone_number, department, role, created_at, updated_at
         FROM users
         WHERE role = 'employee'
           AND is_active = TRUE
@@ -976,13 +1327,14 @@ class TaskAssignmentAPI < Sinatra::Base
     payload = parse_json_body
     full_name = sanitize_text(payload["name"], "Name", required: true, max_length: 120)
     email = normalize_email(payload["email"])
-    phone = normalize_phone(payload["phone"])
+    phone_number = normalize_phone_number(payload["phoneNumber"] || payload["phone"])
+    department = sanitize_text(payload["department"], "Department", required: false, max_length: 120)
     password = payload["password"].to_s
 
     if email.empty? || !valid_email?(email)
       halt_json(400, error: "A valid email is required.")
     end
-    if phone.empty? || phone.length < 8 || phone.length > 15
+    if phone_number.empty? || !valid_phone_number?(phone_number)
       halt_json(400, error: "A valid phone number is required.")
     end
     if password.length < 8
@@ -1001,11 +1353,11 @@ class TaskAssignmentAPI < Sinatra::Base
 
     employee = db_exec(
       <<~SQL,
-        INSERT INTO users (id, email, full_name, phone, role, password_hash, is_active, created_at, updated_at)
-        VALUES (gen_random_uuid(), $1, $2, $3, 'employee', $4, TRUE, NOW(), NOW())
-        RETURNING id, email, full_name, phone, role, created_at, updated_at
+        INSERT INTO users (id, email, full_name, phone, phone_number, department, role, password_hash, is_active, created_at, updated_at)
+        VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, 'employee', $6, TRUE, NOW(), NOW())
+        RETURNING id, email, full_name, phone, phone_number, department, role, created_at, updated_at
       SQL
-      [email, full_name, phone, password_hash]
+      [email, full_name, phone_number.gsub(/\D/, ""), phone_number, department.empty? ? "General" : department, password_hash]
     ).first
 
     JSON.generate(employee: serialize_user_row(employee))
@@ -1051,7 +1403,7 @@ class TaskAssignmentAPI < Sinatra::Base
       <<~SQL,
         INSERT INTO users (id, email, full_name, phone, role, password_hash, is_active, created_at, updated_at)
         VALUES (gen_random_uuid(), $1, $2, $3, 'manager', $4, TRUE, NOW(), NOW())
-        RETURNING id, email, full_name, phone, role, is_active, created_at, updated_at
+        RETURNING id, email, full_name, phone, phone_number, department, role, is_active, created_at, updated_at
       SQL
       [email, name, phone, password_hash]
     ).first
@@ -1080,7 +1432,7 @@ class TaskAssignmentAPI < Sinatra::Base
     end
 
     user_row = db_exec(
-      "SELECT id, email, full_name, phone, role, is_active, created_at, updated_at FROM users WHERE id = $1 LIMIT 1",
+      "SELECT id, email, full_name, phone, phone_number, department, role, is_active, created_at, updated_at FROM users WHERE id = $1 LIMIT 1",
       [params[:user_id]]
     ).first
     halt_json(404, error: "User not found.") unless user_row
@@ -1158,7 +1510,7 @@ class TaskAssignmentAPI < Sinatra::Base
     employees = if privileged_user
       db_exec(
         <<~SQL
-          SELECT id, email, full_name, phone, role, is_active, created_at, updated_at
+          SELECT id, email, full_name, phone, phone_number, department, role, is_active, created_at, updated_at
           FROM users
           WHERE role = 'employee'
             AND is_active = TRUE
@@ -1168,7 +1520,7 @@ class TaskAssignmentAPI < Sinatra::Base
     else
       db_exec(
         <<~SQL,
-          SELECT id, email, full_name, phone, role, is_active, created_at, updated_at
+          SELECT id, email, full_name, phone, phone_number, department, role, is_active, created_at, updated_at
           FROM users
           WHERE id = $1
             AND role = 'employee'
@@ -1246,6 +1598,7 @@ class TaskAssignmentAPI < Sinatra::Base
     products = db_exec(
       <<~SQL
         SELECT p.id, p.vendor_id, v.name AS vendor_name, p.name, p.item_code,
+               p.sku, p.minimum_stock_threshold, p.unit_price, p.status, p.description, p.image_url,
                p.quantity, p.category, p.stock_status, p.created_at, p.updated_at
         FROM products p
         JOIN vendors v ON v.id = p.vendor_id
@@ -1375,7 +1728,7 @@ class TaskAssignmentAPI < Sinatra::Base
 
     assignee = db_exec(
       <<~SQL,
-        SELECT id, full_name, phone
+        SELECT id, full_name, phone, phone_number
         FROM users
         WHERE id = $1
           AND role = 'employee'
@@ -1457,9 +1810,21 @@ class TaskAssignmentAPI < Sinatra::Base
       channel: "app",
       message: "New task assigned: \"#{task[:title]}\" (#{task[:urgency]}) due #{due_for_message}."
     )
+    enqueue_whatsapp_notification(
+      employee_id: task[:assigneeId],
+      task_id: task[:id],
+      template_key: "task_assigned",
+      dedupe_key: "task-assigned-#{task[:id]}-#{task[:updatedAt]}",
+      payload: {
+        employee_name: assignee["full_name"],
+        task_title: task[:title],
+        due_date: due_for_message
+      },
+      created_by: current[:user][:id]
+    )
 
     whatsapp_url = build_whatsapp_url(
-      phone: assignee["phone"],
+      phone: assignee["phone_number"] || assignee["phone"],
       employee_name: assignee["full_name"],
       task_title: task[:title],
       urgency: task[:urgency],
@@ -1529,6 +1894,29 @@ class TaskAssignmentAPI < Sinatra::Base
       [new_status, completed_at, next_reminder_at, task["id"]]
     ).first
 
+    assignee = db_exec(
+      "SELECT id, full_name, phone, phone_number FROM users WHERE id = $1 LIMIT 1",
+      [updated["assignee_id"]]
+    ).first
+    create_notification(
+      employee_id: updated["assignee_id"],
+      task_id: updated["id"],
+      type: "status",
+      channel: "app",
+      message: "Task \"#{updated['title']}\" status changed to #{updated['status']}."
+    )
+    enqueue_whatsapp_notification(
+      employee_id: updated["assignee_id"],
+      task_id: updated["id"],
+      template_key: "task_status_changed",
+      dedupe_key: "task-status-#{updated['id']}-#{updated['updated_at']}",
+      payload: {
+        employee_name: assignee&.dig("full_name").to_s,
+        task_title: updated["title"],
+        task_status: updated["status"]
+      },
+      created_by: current[:user][:id]
+    )
     JSON.generate(task: serialize_task_row(updated))
   end
 
@@ -1804,6 +2192,7 @@ class TaskAssignmentAPI < Sinatra::Base
     products = db_exec(
       <<~SQL,
         SELECT p.id, p.vendor_id, v.name AS vendor_name, p.name, p.item_code,
+               p.sku, p.minimum_stock_threshold, p.unit_price, p.status, p.description, p.image_url,
                p.quantity, p.category, p.stock_status, p.created_at, p.updated_at
         FROM products p
         JOIN vendors v ON v.id = p.vendor_id
@@ -1856,6 +2245,7 @@ class TaskAssignmentAPI < Sinatra::Base
     products = db_exec(
       <<~SQL,
         SELECT p.id, p.vendor_id, v.name AS vendor_name, p.name, p.item_code,
+               p.sku, p.minimum_stock_threshold, p.unit_price, p.status, p.description, p.image_url,
                p.quantity, p.category, p.stock_status, p.created_at, p.updated_at
         FROM products p
         JOIN vendors v ON v.id = p.vendor_id
@@ -1879,24 +2269,42 @@ class TaskAssignmentAPI < Sinatra::Base
 
     name = sanitize_text(payload["name"], "Product name", required: true, max_length: 200)
     item_code = sanitize_text(payload["itemCode"], "Item code", required: true, max_length: 80)
+    sku = sanitize_text(payload["sku"], "SKU", required: false, max_length: 80)
     quantity = parse_positive_integer(payload["quantity"], "Product quantity", min: 0, max: 10_000_000, default: 0)
+    minimum_stock_threshold = parse_positive_integer(payload["minimumStockThreshold"], "Minimum stock threshold", min: 0, max: 10_000_000, default: 0)
+    unit_price = parse_non_negative_decimal(payload["unitPrice"], "Unit price", default: 0.0)
     category = sanitize_text(payload["category"], "Product category", required: false, max_length: 120)
+    status = payload["status"].to_s.strip
+    status = "Active" if status.empty?
+    halt_json(400, error: "Product status must be one of: #{PRODUCT_STATUSES.join(', ')}.") unless PRODUCT_STATUSES.include?(status)
+    description = sanitize_text(payload["description"], "Description", required: false, max_length: 2000)
+    image_url = sanitize_text(payload["imageUrl"], "Image URL", required: false, max_length: 500)
     stock_status = payload["stockStatus"].to_s.strip
-    stock_status = "In Stock" if stock_status.empty?
+    stock_status = if quantity <= 0
+      "Out of Stock"
+    elsif quantity <= minimum_stock_threshold
+      "Low Stock"
+    else
+      "In Stock"
+    end
     unless STOCK_STATUSES.include?(stock_status)
       halt_json(400, error: "Stock status must be one of: #{STOCK_STATUSES.join(', ')}.")
     end
 
     duplicate = db_exec("SELECT 1 FROM products WHERE LOWER(item_code) = LOWER($1) LIMIT 1", [item_code]).first
     halt_json(409, error: "A product with that item code already exists.") if duplicate
+    unless sku.empty?
+      sku_taken = db_exec("SELECT 1 FROM products WHERE LOWER(sku) = LOWER($1) LIMIT 1", [sku]).first
+      halt_json(409, error: "A product with that SKU already exists.") if sku_taken
+    end
 
     product = db_exec(
       <<~SQL,
-        INSERT INTO products (id, vendor_id, name, item_code, quantity, category, stock_status, created_by, created_at, updated_at)
-        VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
-        RETURNING id, vendor_id, name, item_code, quantity, category, stock_status, created_at, updated_at
+        INSERT INTO products (id, vendor_id, name, item_code, sku, quantity, minimum_stock_threshold, unit_price, category, stock_status, status, description, image_url, created_by, created_at, updated_at)
+        VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW(), NOW())
+        RETURNING id, vendor_id, name, item_code, sku, quantity, minimum_stock_threshold, unit_price, category, stock_status, status, description, image_url, created_at, updated_at
       SQL
-      [vendor_id, name, item_code, quantity, category, stock_status, current[:user][:id]]
+      [vendor_id, name, item_code, sku.empty? ? item_code : sku, quantity, minimum_stock_threshold, unit_price, category, stock_status, status, description, image_url, current[:user][:id]]
     ).first
 
     payload_row = product.to_h
@@ -2213,10 +2621,17 @@ class TaskAssignmentAPI < Sinatra::Base
                po.unit_price,
                po.cost_price,
                po.total_amount,
+               po.subtotal_amount,
+               po.tax_amount,
+               po.grand_total_amount,
+               po.subtotal_amount,
+               po.tax_amount,
+               po.grand_total_amount,
                po.order_date,
                po.raised_at,
                po.expected_delivery_date,
                po.expected_at,
+               po.delivered_at,
                po.status,
                po.assigned_employee_id,
                u.full_name AS assigned_employee_name,
@@ -2254,6 +2669,7 @@ class TaskAssignmentAPI < Sinatra::Base
                po.raised_at,
                po.expected_delivery_date,
                po.expected_at,
+               po.delivered_at,
                po.status,
                po.assigned_employee_id,
                u.full_name AS assigned_employee_name,
@@ -2343,7 +2759,10 @@ class TaskAssignmentAPI < Sinatra::Base
     goods = sanitize_text(payload["goods"], "PO goods", required: false, max_length: 300)
     quantity = parse_positive_integer(payload["quantity"], "PO quantity", min: 1, max: 1_000_000, default: 1)
     unit_price = parse_non_negative_decimal(payload["unitPrice"], "PO unit price")
-    total_amount = parse_non_negative_decimal(payload["totalAmount"], "PO total amount", default: (quantity * unit_price).round(2))
+    subtotal_amount = parse_non_negative_decimal(payload["subtotalAmount"], "PO subtotal amount", default: (quantity * unit_price).round(2))
+    tax_amount = parse_non_negative_decimal(payload["taxAmount"], "PO tax amount", default: 0.0)
+    grand_total_amount = parse_non_negative_decimal(payload["grandTotalAmount"], "PO grand total amount", default: (subtotal_amount + tax_amount).round(2))
+    total_amount = parse_non_negative_decimal(payload["totalAmount"], "PO total amount", default: grand_total_amount)
     order_date = parse_timestamp(payload["orderDate"], "PO order date")
     expected_delivery_date = parse_timestamp(payload["expectedDeliveryDate"], "PO expected delivery date")
     status = payload["status"].to_s.strip
@@ -2375,13 +2794,13 @@ class TaskAssignmentAPI < Sinatra::Base
       <<~SQL,
         INSERT INTO purchase_orders (
           id, vendor_id, po_number, product_name, item_code, goods, quantity,
-          unit_price, cost_price, total_amount, order_date, raised_at,
+          unit_price, cost_price, total_amount, subtotal_amount, tax_amount, grand_total_amount, order_date, raised_at,
           expected_delivery_date, expected_at, status, assigned_employee_id, notes, created_by, created_at, updated_at
         )
         VALUES (
           gen_random_uuid(), $1, $2, $3, $4, $5, $6,
-          $7, $8, $9, $10, $10,
-          $11, $11, $12, $13, $14, $15, NOW(), NOW()
+          $7, $8, $9, $10, $11, $12, $13, $13,
+          $14, $14, $15, $16, $17, $18, NOW(), NOW()
         )
         RETURNING id,
                   vendor_id,
@@ -2393,10 +2812,17 @@ class TaskAssignmentAPI < Sinatra::Base
                   unit_price,
                   cost_price,
                   total_amount,
+                  subtotal_amount,
+                  tax_amount,
+                  grand_total_amount,
+                  subtotal_amount,
+                  tax_amount,
+                  grand_total_amount,
                   order_date,
                   raised_at,
                   expected_delivery_date,
                   expected_at,
+                  delivered_at,
                   status,
                   assigned_employee_id,
                   notes,
@@ -2404,7 +2830,7 @@ class TaskAssignmentAPI < Sinatra::Base
       SQL
       [
         vendor_id, po_number, product_name, item_code, goods, quantity,
-        unit_price, unit_price, total_amount, order_date, expected_delivery_date,
+        unit_price, unit_price, total_amount, subtotal_amount, tax_amount, grand_total_amount, order_date, expected_delivery_date,
         status, assigned_employee_id, notes, user[:id]
       ]
     ).first
@@ -2462,6 +2888,7 @@ class TaskAssignmentAPI < Sinatra::Base
                   raised_at,
                   expected_delivery_date,
                   expected_at,
+                  delivered_at,
                   status,
                   assigned_employee_id,
                   notes,
@@ -2478,6 +2905,23 @@ class TaskAssignmentAPI < Sinatra::Base
       details: { fromStatus: purchase_order["status"], toStatus: new_status }
     )
 
+    if updated["assigned_employee_id"]
+      assignee = db_exec(
+        "SELECT id, full_name FROM users WHERE id = $1 LIMIT 1",
+        [updated["assigned_employee_id"]]
+      ).first
+      enqueue_whatsapp_notification(
+        employee_id: updated["assigned_employee_id"],
+        purchase_order_id: updated["id"],
+        template_key: "po_notification",
+        dedupe_key: "po-status-#{updated['id']}-#{updated['status']}-#{Time.now.utc.to_i}",
+        payload: {
+          employee_name: assignee&.dig("full_name").to_s,
+          po_number: updated["po_number"]
+        },
+        created_by: current[:user][:id]
+      )
+    end
     JSON.generate(purchaseOrder: serialize_purchase_order_row(updated))
   end
 
@@ -2525,6 +2969,314 @@ class TaskAssignmentAPI < Sinatra::Base
     payload_row["sent_by_email"] = current[:user][:email]
 
     JSON.generate(vendorAlert: serialize_vendor_alert_row(payload_row))
+  end
+
+  put "/api/tasks/:task_id" do
+    current = require_authentication!
+    payload = parse_json_body
+    task = task_row_by_id(params[:task_id])
+    halt_json(404, error: "Task not found.") unless task
+    unless manager_or_admin?(current[:user]) || task["assignee_id"] == current[:user][:id]
+      halt_json(403, error: "You can only update your own tasks.")
+    end
+    new_due_at = payload.key?("dueAt") ? parse_timestamp(payload["dueAt"], "Task due date") : task["due_at"]
+    new_status = payload["status"].to_s.strip
+    new_status = task["status"] if new_status.empty?
+    halt_json(400, error: "Task status must be one of: #{TASK_STATUSES.join(', ')}.") unless TASK_STATUSES.include?(new_status)
+    updated = db_exec(
+      <<~SQL,
+        UPDATE tasks
+        SET due_at = $1,
+            status = $2,
+            updated_at = NOW()
+        WHERE id = $3
+        RETURNING id, title, description, assignee_id, due_at, urgency, status,
+                  reminder_every_minutes, persistent_reminders, next_reminder_at, last_reminder_at,
+                  attachments, created_by, created_at, updated_at, completed_at
+      SQL
+      [new_due_at, new_status, task["id"]]
+    ).first
+    if task["due_at"] != updated["due_at"]
+      assignee = db_exec("SELECT full_name FROM users WHERE id = $1 LIMIT 1", [updated["assignee_id"]]).first
+      enqueue_whatsapp_notification(
+        employee_id: updated["assignee_id"],
+        task_id: updated["id"],
+        template_key: "task_due_date_changed",
+        dedupe_key: "task-due-#{updated['id']}-#{updated['updated_at']}",
+        payload: {
+          employee_name: assignee&.dig("full_name").to_s,
+          task_title: updated["title"],
+          due_date: Time.parse(updated["due_at"]).strftime("%Y-%m-%d %H:%M UTC")
+        },
+        created_by: current[:user][:id]
+      )
+    end
+    JSON.generate(task: serialize_task_row(updated))
+  end
+
+  get "/api/whatsapp/logs" do
+    require_manager_or_admin!
+    process_whatsapp_queue!(limit: 10)
+    rows = db_exec(
+      <<~SQL
+        SELECT l.id, l.queue_id, l.employee_id, u.full_name AS employee_name, l.template_key, l.message_text,
+               l.status, l.provider_message_sid, l.error_message, l.metadata, l.created_at
+        FROM whatsapp_delivery_logs l
+        LEFT JOIN users u ON u.id = l.employee_id
+        ORDER BY l.created_at DESC
+        LIMIT 500
+      SQL
+    ).map do |row|
+      {
+        id: row["id"],
+        queueId: row["queue_id"],
+        employeeId: row["employee_id"],
+        employeeName: row["employee_name"] || "",
+        templateKey: row["template_key"],
+        messageText: row["message_text"],
+        status: row["status"],
+        providerMessageSid: row["provider_message_sid"],
+        errorMessage: row["error_message"],
+        metadata: parse_json_column(row["metadata"], {}),
+        createdAt: row["created_at"]
+      }
+    end
+    JSON.generate(logs: rows)
+  end
+
+  post "/api/whatsapp/retry/:queue_id" do
+    require_manager_or_admin!
+    db_exec(
+      <<~SQL,
+        UPDATE whatsapp_notification_queue
+        SET status = 'queued',
+            next_attempt_at = NOW(),
+            updated_at = NOW()
+        WHERE id = $1
+      SQL
+      [params[:queue_id]]
+    )
+    process_whatsapp_queue!(limit: 1)
+    JSON.generate(success: true)
+  end
+
+  post "/api/whatsapp/process" do
+    require_manager_or_admin!
+    process_whatsapp_queue!(limit: 50)
+    JSON.generate(success: true)
+  end
+
+  post "/api/whatsapp/test-message" do
+    current = require_manager_or_admin!
+    payload = parse_json_body
+    employee_id = payload["employeeId"].to_s.strip
+    halt_json(400, error: "Employee is required.") if employee_id.empty?
+    employee = db_exec("SELECT id, full_name FROM users WHERE id = $1 LIMIT 1", [employee_id]).first
+    halt_json(404, error: "Employee not found.") unless employee
+    enqueue_whatsapp_notification(
+      employee_id: employee_id,
+      template_key: "admin_announcement",
+      dedupe_key: "test-message-#{employee_id}-#{Time.now.utc.to_i}",
+      payload: { announcement: payload["message"].to_s.strip.empty? ? "Test message from TaskApp admin console." : payload["message"].to_s.strip },
+      created_by: current[:user][:id]
+    )
+    JSON.generate(success: true)
+  end
+
+  post "/api/admin/announcements" do
+    current = require_manager_or_admin!
+    payload = parse_json_body
+    message = sanitize_text(payload["message"], "Announcement message", required: true, max_length: 1000)
+    employee_ids = db_exec("SELECT id FROM users WHERE role = 'employee' AND is_active = TRUE").map { |row| row["id"] }
+    employee_ids.each do |employee_id|
+      enqueue_whatsapp_notification(
+        employee_id: employee_id,
+        template_key: "admin_announcement",
+        dedupe_key: "announcement-#{Digest::SHA256.hexdigest(message)}-#{employee_id}-#{Time.now.utc.to_i}",
+        payload: { announcement: message },
+        created_by: current[:user][:id]
+      )
+    end
+    JSON.generate(success: true, recipients: employee_ids.length)
+  end
+
+  get "/api/performance/overview" do
+    current = require_manager_or_admin!
+    department = params["department"].to_s.strip.downcase
+    employees = db_exec(
+      <<~SQL
+        SELECT id, full_name, department
+        FROM users
+        WHERE role = 'employee' AND is_active = TRUE
+        ORDER BY full_name ASC
+      SQL
+    ).to_a
+    employees = employees.select { |row| row["department"].to_s.downcase == department } unless department.empty?
+    scores = employees.map do |row|
+      stats = compute_employee_performance(employee_id: row["id"])
+      stats.merge(employeeName: row["full_name"], department: row["department"] || "General")
+    end.sort_by { |row| -row[:score] }
+    delayed_tasks = db_exec(
+      <<~SQL
+        SELECT t.id, t.title, t.assignee_id, u.full_name AS assignee_name, t.due_at, t.status
+        FROM tasks t
+        JOIN users u ON u.id = t.assignee_id
+        WHERE t.status <> 'Completed' AND t.due_at < NOW()
+        ORDER BY t.due_at ASC
+        LIMIT 20
+      SQL
+    ).to_a
+    top = scores.first(5)
+    weakest = scores.last(5).reverse
+    JSON.generate(
+      rankings: scores,
+      topPerformers: top,
+      weakestPerformers: weakest,
+      mostDelayedTasks: delayed_tasks.map { |row| { id: row["id"], title: row["title"], assigneeId: row["assignee_id"], assigneeName: row["assignee_name"], dueAt: row["due_at"], status: row["status"] } }
+    )
+  end
+
+  get "/api/performance/employees/:employee_id" do
+    current = require_authentication!
+    employee_id = params[:employee_id]
+    if current[:user][:role] == "employee" && current[:user][:id] != employee_id
+      halt_json(403, error: "Employees can only view their own performance.")
+    end
+    profile = db_exec(
+      "SELECT id, full_name, department FROM users WHERE id = $1 AND role = 'employee' LIMIT 1",
+      [employee_id]
+    ).first
+    halt_json(404, error: "Employee not found.") unless profile
+    now = Time.now.utc
+    monthly_start = Time.utc(now.year, now.month, 1).iso8601
+    weekly_start = (now - (7 * 24 * 60 * 60)).iso8601
+    overall = compute_employee_performance(employee_id: employee_id)
+    monthly = compute_employee_performance(employee_id: employee_id, start_at: monthly_start)
+    weekly = compute_employee_performance(employee_id: employee_id, start_at: weekly_start)
+    upsert_performance_snapshot(employee_id: employee_id, period_type: "all_time", period_start: Date.new(2000, 1, 1), period_end: Date.today, stats: overall)
+    upsert_performance_snapshot(employee_id: employee_id, period_type: "monthly", period_start: Date.parse(monthly_start), period_end: Date.today, stats: monthly)
+    upsert_performance_snapshot(employee_id: employee_id, period_type: "weekly", period_start: Date.parse(weekly_start), period_end: Date.today, stats: weekly)
+    task_history = db_exec(
+      <<~SQL,
+        SELECT id, title, due_at, status, created_at, completed_at
+        FROM tasks
+        WHERE assignee_id = $1
+        ORDER BY created_at DESC
+        LIMIT 100
+      SQL
+      [employee_id]
+    ).to_a
+    JSON.generate(
+      employee: { id: profile["id"], name: profile["full_name"], department: profile["department"] || "General" },
+      overall: overall,
+      monthly: monthly,
+      weekly: weekly,
+      taskHistory: task_history.map { |row| { id: row["id"], title: row["title"], dueAt: row["due_at"], status: row["status"], createdAt: row["created_at"], completedAt: row["completed_at"] } }
+    )
+  end
+
+  get "/api/performance/compare" do
+    require_manager_or_admin!
+    ids = params["employeeIds"].to_s.split(",").map(&:strip).reject(&:empty?).first(10)
+    halt_json(400, error: "At least one employee ID is required.") if ids.empty?
+    comparisons = ids.map do |employee_id|
+      profile = db_exec("SELECT id, full_name, department FROM users WHERE id = $1 LIMIT 1", [employee_id]).first
+      next nil unless profile
+      compute_employee_performance(employee_id: employee_id).merge(employeeName: profile["full_name"], department: profile["department"] || "General")
+    end.compact
+    JSON.generate(comparisons: comparisons)
+  end
+
+  post "/api/admin/performance/weights" do
+    current = require_admin!
+    payload = parse_json_body
+    on_time = Integer(payload["onTimeCompletionWeight"] || 10)
+    late = Integer(payload["lateCompletionWeight"] || 5)
+    overdue = Integer(payload["pendingOverdueWeight"] || -8)
+    unfinished = Integer(payload["unfinishedWeight"] || -10)
+    row = db_exec(
+      <<~SQL,
+        INSERT INTO performance_scoring_weights (
+          id, on_time_completion_weight, late_completion_weight, pending_overdue_weight, unfinished_weight, updated_by, updated_at, created_at
+        )
+        VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, NOW(), NOW())
+        RETURNING on_time_completion_weight, late_completion_weight, pending_overdue_weight, unfinished_weight, updated_at
+      SQL
+      [on_time, late, overdue, unfinished, current[:user][:id]]
+    ).first
+    JSON.generate(weights: row)
+  end
+
+  post "/api/admin/performance/reset" do
+    require_admin!
+    db_exec("TRUNCATE TABLE employee_performance_snapshots")
+    JSON.generate(success: true)
+  end
+
+  post "/api/admin/performance/reports" do
+    current = require_admin!
+    payload = parse_json_body
+    month = payload["month"].to_s.strip
+    halt_json(400, error: "Month must be provided in YYYY-MM format.") unless /\A\d{4}-\d{2}\z/.match?(month)
+    start_date = Date.parse("#{month}-01")
+    end_date = (start_date.next_month)
+    employees = db_exec("SELECT id, full_name, department FROM users WHERE role = 'employee' AND is_active = TRUE").to_a
+    rows = employees.map do |row|
+      compute_employee_performance(employee_id: row["id"], start_at: start_date.to_time.utc.iso8601, end_at: end_date.to_time.utc.iso8601).merge(employeeName: row["full_name"], department: row["department"] || "General")
+    end
+    report_data = {
+      month: month,
+      generatedAt: Time.now.utc.iso8601,
+      totalEmployees: rows.length,
+      rankings: rows.sort_by { |item| -item[:score] }
+    }
+    db_exec(
+      <<~SQL,
+        INSERT INTO performance_reports (id, period_month, generated_by, report_data, created_at)
+        VALUES (gen_random_uuid(), $1, $2, $3::jsonb, NOW())
+      SQL
+      [month, current[:user][:id], JSON.generate(report_data)]
+    )
+    JSON.generate(report: report_data)
+  end
+
+  get "/api/products/:product_id/stock-history" do
+    require_authentication!
+    rows = db_exec(
+      <<~SQL,
+        SELECT m.id, m.product_id, m.movement_type, m.quantity_change, m.previous_quantity, m.new_quantity,
+               m.reference_type, m.reference_id, m.notes, m.created_at, u.full_name AS actor_name
+        FROM product_stock_movements m
+        LEFT JOIN users u ON u.id = m.created_by
+        WHERE m.product_id = $1
+        ORDER BY m.created_at DESC
+        LIMIT 200
+      SQL
+      [params[:product_id]]
+    ).to_a
+    JSON.generate(stockHistory: rows.map { |row| { id: row["id"], movementType: row["movement_type"], quantityChange: row["quantity_change"].to_i, previousQuantity: row["previous_quantity"].to_i, newQuantity: row["new_quantity"].to_i, referenceType: row["reference_type"], referenceId: row["reference_id"], notes: row["notes"], actorName: row["actor_name"], createdAt: row["created_at"] } })
+  end
+
+  post "/api/products/:product_id/stock-movements" do
+    current = require_manager_or_admin!
+    payload = parse_json_body
+    movement_type = payload["movementType"].to_s.strip
+    quantity_change = Integer(payload["quantityChange"] || 0)
+    halt_json(400, error: "Invalid movement type.") unless %w[stock_in stock_out adjustment].include?(movement_type)
+    halt_json(400, error: "Quantity change cannot be zero.") if quantity_change.zero?
+    quantity_change = -quantity_change.abs if movement_type == "stock_out"
+    quantity_change = quantity_change.abs if movement_type == "stock_in"
+    result = record_stock_movement(
+      product_id: params[:product_id],
+      movement_type: movement_type,
+      quantity_change: quantity_change,
+      reference_type: "manual",
+      reference_id: nil,
+      notes: sanitize_text(payload["notes"], "Notes", required: false, max_length: 400),
+      actor_id: current[:user][:id]
+    )
+    halt_json(404, error: "Product not found.") unless result
+    JSON.generate(stock: result)
   end
 
   not_found do

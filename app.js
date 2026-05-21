@@ -13,7 +13,9 @@ const APP_STATE = {
     poAnalytics: {},
     adminMetrics: null,
     activityLogs: [],
-    users: []
+    users: [],
+    whatsappLogs: [],
+    performanceOverview: null
   },
   page: "tasks"
 };
@@ -41,6 +43,7 @@ const el = {
   employeeEmail: document.getElementById("employeeEmail"),
   employeePassword: document.getElementById("employeePassword"),
   employeePhone: document.getElementById("employeePhone"),
+  employeeDepartment: document.getElementById("employeeDepartment"),
   taskForm: document.getElementById("taskForm"),
   taskTitle: document.getElementById("taskTitle"),
   taskAssignee: document.getElementById("taskAssignee"),
@@ -65,9 +68,20 @@ const el = {
   productVendorId: document.getElementById("productVendorId"),
   productName: document.getElementById("productName"),
   productItemCode: document.getElementById("productItemCode"),
+  productSku: document.getElementById("productSku"),
   productQuantity: document.getElementById("productQuantity"),
+  productMinimumStockThreshold: document.getElementById("productMinimumStockThreshold"),
+  productUnitPrice: document.getElementById("productUnitPrice"),
   productCategory: document.getElementById("productCategory"),
+  productStatus: document.getElementById("productStatus"),
+  productDescription: document.getElementById("productDescription"),
+  productImageUrl: document.getElementById("productImageUrl"),
   productStockStatus: document.getElementById("productStockStatus"),
+  stockMovementForm: document.getElementById("stockMovementForm"),
+  stockMovementProductId: document.getElementById("stockMovementProductId"),
+  stockMovementType: document.getElementById("stockMovementType"),
+  stockMovementQuantity: document.getElementById("stockMovementQuantity"),
+  stockMovementNotes: document.getElementById("stockMovementNotes"),
   productSearch: document.getElementById("productSearch"),
   productTable: document.getElementById("productTable"),
   clientForm: document.getElementById("clientForm"),
@@ -112,7 +126,23 @@ const el = {
   managerPassword: document.getElementById("managerPassword"),
   adminUsersTable: document.getElementById("adminUsersTable"),
   adminMetricsCards: document.getElementById("adminMetricsCards"),
-  activityLogsTable: document.getElementById("activityLogsTable")
+  activityLogsTable: document.getElementById("activityLogsTable"),
+  announcementForm: document.getElementById("announcementForm"),
+  announcementMessage: document.getElementById("announcementMessage"),
+  whatsappTestForm: document.getElementById("whatsappTestForm"),
+  whatsappTestEmployeeId: document.getElementById("whatsappTestEmployeeId"),
+  whatsappTestMessage: document.getElementById("whatsappTestMessage"),
+  processWhatsappQueueBtn: document.getElementById("processWhatsappQueueBtn"),
+  whatsappLogsTable: document.getElementById("whatsappLogsTable"),
+  performanceWeightsForm: document.getElementById("performanceWeightsForm"),
+  weightOnTime: document.getElementById("weightOnTime"),
+  weightLate: document.getElementById("weightLate"),
+  weightOverdue: document.getElementById("weightOverdue"),
+  weightUnfinished: document.getElementById("weightUnfinished"),
+  performanceReportForm: document.getElementById("performanceReportForm"),
+  performanceReportMonth: document.getElementById("performanceReportMonth"),
+  resetPerformanceSnapshotsBtn: document.getElementById("resetPerformanceSnapshotsBtn"),
+  performanceOverviewTable: document.getElementById("performanceOverviewTable")
 };
 
 bootstrap();
@@ -127,6 +157,127 @@ async function bootstrap() {
   }
 }
 
+function renderWhatsappLogs() {
+  if (!isPrivileged()) return;
+  const logs = APP_STATE.workspace.whatsappLogs || [];
+  if (!logs.length) {
+    el.whatsappLogsTable.innerHTML = "<div class='empty'>No WhatsApp logs available.</div>";
+    return;
+  }
+  el.whatsappLogsTable.innerHTML = `
+    <table><thead><tr><th>Time</th><th>Employee</th><th>Template</th><th>Status</th></tr></thead><tbody>
+      ${logs.slice(0, 50).map((row) => `<tr><td>${formatDateTime(row.createdAt)}</td><td>${escapeHtml(row.employeeName || "-")}</td><td>${escapeHtml(row.templateKey || "-")}</td><td>${escapeHtml(row.status || "-")}</td></tr>`).join("")}
+    </tbody></table>
+  `;
+}
+
+function renderPerformanceOverview() {
+  if (!isPrivileged()) return;
+  const rankings = APP_STATE.workspace.performanceOverview?.rankings || [];
+  if (!rankings.length) {
+    el.performanceOverviewTable.innerHTML = "<div class='empty'>No performance data available.</div>";
+    return;
+  }
+  el.performanceOverviewTable.innerHTML = `
+    <table><thead><tr><th>Employee</th><th>Score</th><th>Grade</th><th>Completion</th></tr></thead><tbody>
+      ${rankings.slice(0, 50).map((row) => `<tr><td>${escapeHtml(row.employeeName || row.employeeId)}</td><td>${row.score}</td><td>${escapeHtml(row.grade || "-")}</td><td>${row.completionPercentage || 0}%</td></tr>`).join("")}
+    </tbody></table>
+  `;
+}
+
+async function onCreateStockMovement(event) {
+  event.preventDefault();
+  if (!isPrivileged()) return;
+  try {
+    await api(`/products/${encodeURIComponent(el.stockMovementProductId.value)}/stock-movements`, {
+      method: "POST",
+      body: {
+        movementType: el.stockMovementType.value,
+        quantityChange: Number(el.stockMovementQuantity.value || 0),
+        notes: el.stockMovementNotes.value
+      }
+    });
+    await refreshWorkspace();
+    renderProducts();
+    showToast("Stock updated", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function onBroadcastAnnouncement(event) {
+  event.preventDefault();
+  if (!isPrivileged()) return;
+  try {
+    await api("/admin/announcements", { method: "POST", body: { message: el.announcementMessage.value } });
+    showToast("Announcement queued", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function onSendWhatsappTest(event) {
+  event.preventDefault();
+  if (!isPrivileged()) return;
+  try {
+    await api("/whatsapp/test-message", { method: "POST", body: { employeeId: el.whatsappTestEmployeeId.value, message: el.whatsappTestMessage.value } });
+    showToast("Test message queued", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function onProcessWhatsappQueue() {
+  if (!isPrivileged()) return;
+  try {
+    await api("/whatsapp/process", { method: "POST", body: {} });
+    await refreshWorkspace();
+    showToast("Queue processed", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function onSavePerformanceWeights(event) {
+  event.preventDefault();
+  if (!isAdmin()) return;
+  try {
+    await api("/admin/performance/weights", {
+      method: "POST",
+      body: {
+        onTimeCompletionWeight: Number(el.weightOnTime.value || 10),
+        lateCompletionWeight: Number(el.weightLate.value || 5),
+        pendingOverdueWeight: Number(el.weightOverdue.value || -8),
+        unfinishedWeight: Number(el.weightUnfinished.value || -10)
+      }
+    });
+    showToast("Performance weights updated", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function onGeneratePerformanceReport(event) {
+  event.preventDefault();
+  if (!isAdmin()) return;
+  try {
+    await api("/admin/performance/reports", { method: "POST", body: { month: el.performanceReportMonth.value } });
+    showToast("Performance report generated", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function onResetPerformanceSnapshots() {
+  if (!isAdmin()) return;
+  try {
+    await api("/admin/performance/reset", { method: "POST", body: {} });
+    showToast("Performance snapshots reset", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
 function bindEvents() {
   el.loginForm.addEventListener("submit", onLogin);
   el.logoutBtn.addEventListener("click", onLogout);
@@ -137,6 +288,7 @@ function bindEvents() {
   el.taskSearch.addEventListener("input", renderTasks);
   el.vendorForm.addEventListener("submit", onCreateVendor);
   el.productForm.addEventListener("submit", onCreateProduct);
+  el.stockMovementForm.addEventListener("submit", onCreateStockMovement);
   el.vendorSearch.addEventListener("input", renderVendors);
   el.productSearch.addEventListener("input", renderProducts);
   el.clientForm.addEventListener("submit", onCreateClient);
@@ -149,6 +301,12 @@ function bindEvents() {
   el.poTable.addEventListener("click", onPurchaseOrderClick);
   el.managerForm.addEventListener("submit", onCreateManager);
   el.adminUsersTable.addEventListener("click", onAdminUserAction);
+  el.announcementForm.addEventListener("submit", onBroadcastAnnouncement);
+  el.whatsappTestForm.addEventListener("submit", onSendWhatsappTest);
+  el.processWhatsappQueueBtn.addEventListener("click", onProcessWhatsappQueue);
+  el.performanceWeightsForm.addEventListener("submit", onSavePerformanceWeights);
+  el.performanceReportForm.addEventListener("submit", onGeneratePerformanceReport);
+  el.resetPerformanceSnapshotsBtn.addEventListener("click", onResetPerformanceSnapshots);
 }
 
 function resolveApiBaseUrl() {
@@ -223,11 +381,17 @@ async function refreshWorkspace() {
     poAnalytics: payload.poAnalytics || {},
     adminMetrics: payload.adminMetrics || null,
     activityLogs: payload.activityLogs || [],
-    users: APP_STATE.workspace.users || []
+    users: APP_STATE.workspace.users || [],
+    whatsappLogs: APP_STATE.workspace.whatsappLogs || [],
+    performanceOverview: APP_STATE.workspace.performanceOverview || null
   };
   if (isAdmin()) {
     const usersPayload = await api("/admin/users");
     APP_STATE.workspace.users = usersPayload.users || [];
+  }
+  if (isPrivileged()) {
+    APP_STATE.workspace.whatsappLogs = (await api("/whatsapp/logs").catch(() => ({ logs: [] }))).logs || [];
+    APP_STATE.workspace.performanceOverview = await api("/performance/overview").catch(() => ({ rankings: [] }));
   }
 }
 
@@ -306,6 +470,8 @@ function renderAll() {
   renderAdminMetrics();
   renderAdminUsers();
   renderActivityLogs();
+  renderWhatsappLogs();
+  renderPerformanceOverview();
 }
 
 function renderSelectors() {
@@ -571,7 +737,7 @@ async function onCreateEmployee(event) {
   event.preventDefault();
   if (!isPrivileged()) return;
   try {
-    await api("/employees", { method: "POST", body: { name: el.employeeName.value, email: el.employeeEmail.value, password: el.employeePassword.value, phone: el.employeePhone.value } });
+    await api("/employees", { method: "POST", body: { name: el.employeeName.value, email: el.employeeEmail.value, password: el.employeePassword.value, phoneNumber: el.employeePhone.value, department: el.employeeDepartment.value } });
     await refreshWorkspace();
     renderAll();
     el.employeeForm.reset();
@@ -655,8 +821,14 @@ async function onCreateProduct(event) {
         vendorId: el.productVendorId.value,
         name: el.productName.value,
         itemCode: el.productItemCode.value,
+        sku: el.productSku.value,
         quantity: Number(el.productQuantity.value || 0),
+        minimumStockThreshold: Number(el.productMinimumStockThreshold.value || 0),
+        unitPrice: Number(el.productUnitPrice.value || 0),
         category: el.productCategory.value,
+        status: el.productStatus.value,
+        description: el.productDescription.value,
+        imageUrl: el.productImageUrl.value,
         stockStatus: el.productStockStatus.value
       }
     });
