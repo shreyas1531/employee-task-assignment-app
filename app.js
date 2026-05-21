@@ -4,6 +4,9 @@ const APP_STATE = {
   workspace: {
     employees: [],
     tasks: [],
+    reminders: [],
+    recurringTemplates: [],
+    weeklyReports: [],
     vendors: [],
     products: [],
     clients: [],
@@ -15,7 +18,8 @@ const APP_STATE = {
     activityLogs: [],
     users: [],
     whatsappLogs: [],
-    performanceOverview: null
+    performanceOverview: null,
+    automation: null
   },
   page: "tasks"
 };
@@ -142,7 +146,36 @@ const el = {
   performanceReportForm: document.getElementById("performanceReportForm"),
   performanceReportMonth: document.getElementById("performanceReportMonth"),
   resetPerformanceSnapshotsBtn: document.getElementById("resetPerformanceSnapshotsBtn"),
-  performanceOverviewTable: document.getElementById("performanceOverviewTable")
+  performanceOverviewTable: document.getElementById("performanceOverviewTable"),
+  reminderForm: document.getElementById("reminderForm"),
+  reminderTitle: document.getElementById("reminderTitle"),
+  reminderType: document.getElementById("reminderType"),
+  reminderRecurrenceType: document.getElementById("reminderRecurrenceType"),
+  reminderCustomIntervalDays: document.getElementById("reminderCustomIntervalDays"),
+  reminderAssignedUserId: document.getElementById("reminderAssignedUserId"),
+  reminderAssignedDepartment: document.getElementById("reminderAssignedDepartment"),
+  reminderDueAt: document.getElementById("reminderDueAt"),
+  reminderUrgency: document.getElementById("reminderUrgency"),
+  reminderBeforeMinutes: document.getElementById("reminderBeforeMinutes"),
+  reminderEscalateMinutes: document.getElementById("reminderEscalateMinutes"),
+  reminderDescription: document.getElementById("reminderDescription"),
+  remindersTable: document.getElementById("remindersTable"),
+  recurringTemplateForm: document.getElementById("recurringTemplateForm"),
+  templateName: document.getElementById("templateName"),
+  templateRecurrenceType: document.getElementById("templateRecurrenceType"),
+  templateCustomIntervalDays: document.getElementById("templateCustomIntervalDays"),
+  templateAssignMode: document.getElementById("templateAssignMode"),
+  templateAssignedUserId: document.getElementById("templateAssignedUserId"),
+  templateAssignedDepartment: document.getElementById("templateAssignedDepartment"),
+  templateDueAfterHours: document.getElementById("templateDueAfterHours"),
+  templateStartsAt: document.getElementById("templateStartsAt"),
+  templateUrgency: document.getElementById("templateUrgency"),
+  templateDescription: document.getElementById("templateDescription"),
+  templateInstructions: document.getElementById("templateInstructions"),
+  recurringTemplatesTable: document.getElementById("recurringTemplatesTable"),
+  runAutomationNowBtn: document.getElementById("runAutomationNowBtn"),
+  generateWeeklyReportBtn: document.getElementById("generateWeeklyReportBtn"),
+  weeklyReportsTable: document.getElementById("weeklyReportsTable")
 };
 
 bootstrap();
@@ -157,6 +190,167 @@ async function bootstrap() {
   }
 }
 
+async function onCreateReminder(event) {
+  event.preventDefault();
+  if (!isPrivileged()) return;
+  try {
+    await api("/reminders", {
+      method: "POST",
+      body: {
+        title: el.reminderTitle.value,
+        description: el.reminderDescription.value,
+        reminderType: el.reminderType.value,
+        recurrenceType: el.reminderRecurrenceType.value || null,
+        customIntervalDays: el.reminderCustomIntervalDays.value ? Number(el.reminderCustomIntervalDays.value) : null,
+        assignedUserId: el.reminderAssignedUserId.value || null,
+        assignedDepartment: el.reminderAssignedDepartment.value,
+        dueAt: new Date(el.reminderDueAt.value).toISOString(),
+        urgency: el.reminderUrgency.value,
+        remindBeforeMinutes: Number(el.reminderBeforeMinutes.value || 60),
+        escalateAfterMinutes: Number(el.reminderEscalateMinutes.value || 120)
+      }
+    });
+    await refreshWorkspace();
+    renderReminders();
+    el.reminderForm.reset();
+    showToast("Reminder created", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function onReminderActionClick(event) {
+  const button = event.target.closest("button[data-reminder-action]");
+  if (!button) return;
+  const action = button.dataset.reminderAction;
+  const body = { action };
+  if (action === "snooze") {
+    const input = window.prompt("Snooze for how many minutes?", "30");
+    if (input === null) return;
+    const snoozeMinutes = Number(input);
+    if (!Number.isFinite(snoozeMinutes) || snoozeMinutes < 1) {
+      showToast("Enter a valid snooze duration in minutes", "error");
+      return;
+    }
+    body.snoozeMinutes = Math.round(snoozeMinutes);
+  }
+  if (action === "reschedule") {
+    const input = window.prompt("Enter new due date/time in ISO format (YYYY-MM-DDTHH:mm)");
+    if (!input) return;
+    const parsed = new Date(input);
+    if (Number.isNaN(parsed.getTime())) {
+      showToast("Enter a valid date/time", "error");
+      return;
+    }
+    body.dueAt = parsed.toISOString();
+  }
+  try {
+    await api(`/reminders/${encodeURIComponent(button.dataset.reminderId)}/actions`, {
+      method: "POST",
+      body
+    });
+    await refreshWorkspace();
+    renderReminders();
+    showToast("Reminder updated", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function onCreateRecurringTemplate(event) {
+  event.preventDefault();
+  if (!isPrivileged()) return;
+  try {
+    await api("/recurring-templates", {
+      method: "POST",
+      body: {
+        name: el.templateName.value,
+        description: el.templateDescription.value,
+        instructions: el.templateInstructions.value,
+        recurrenceType: el.templateRecurrenceType.value,
+        customIntervalDays: el.templateCustomIntervalDays.value ? Number(el.templateCustomIntervalDays.value) : null,
+        assignMode: el.templateAssignMode.value,
+        assignedUserId: el.templateAssignedUserId.value || null,
+        assignedDepartment: el.templateAssignedDepartment.value,
+        dueAfterHours: Number(el.templateDueAfterHours.value || 24),
+        startsAt: new Date(el.templateStartsAt.value).toISOString(),
+        urgency: el.templateUrgency.value
+      }
+    });
+    await refreshWorkspace();
+    renderRecurringTemplates();
+    el.recurringTemplateForm.reset();
+    showToast("Recurring template created", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function onTemplateRunClick(event) {
+  const button = event.target.closest("button[data-template-run-id]");
+  if (!button) return;
+  try {
+    await api(`/recurring-templates/${encodeURIComponent(button.dataset.templateRunId)}/run`, { method: "POST", body: {} });
+    await refreshWorkspace();
+    renderRecurringTemplates();
+    renderTasks();
+    showToast("Template run completed", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function onRunAutomationNow() {
+  if (!isPrivileged()) return;
+  try {
+    await api("/automation/run", { method: "POST", body: {} });
+    await refreshWorkspace();
+    renderAll();
+    showToast("Automation run finished", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function onGenerateWeeklyReportNow() {
+  if (!isPrivileged()) return;
+  try {
+    await api("/weekly-reports/generate", { method: "POST", body: {} });
+    await refreshWorkspace();
+    renderWeeklyReports();
+    showToast("Weekly report generated", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function onWeeklyReportsClick(event) {
+  const button = event.target.closest("button[data-report-pdf-id]");
+  if (!button) return;
+  const headers = {};
+  if (APP_STATE.session?.token) headers.Authorization = `Bearer ${APP_STATE.session.token}`;
+  try {
+    const response = await fetch(
+      `${API_BASE_URL}/weekly-reports/${encodeURIComponent(button.dataset.reportPdfId)}/pdf`,
+      { headers }
+    );
+    if (!response.ok) {
+      let message = `Request failed (${response.status})`;
+      try {
+        const payload = JSON.parse(await response.text());
+        message = payload.error || message;
+      } catch (_) {}
+      throw new Error(message);
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    window.open(url, "_blank", "noopener");
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
 function renderWhatsappLogs() {
   if (!isPrivileged()) return;
   const logs = APP_STATE.workspace.whatsappLogs || [];
@@ -167,6 +361,78 @@ function renderWhatsappLogs() {
   el.whatsappLogsTable.innerHTML = `
     <table><thead><tr><th>Time</th><th>Employee</th><th>Template</th><th>Status</th></tr></thead><tbody>
       ${logs.slice(0, 50).map((row) => `<tr><td>${formatDateTime(row.createdAt)}</td><td>${escapeHtml(row.employeeName || "-")}</td><td>${escapeHtml(row.templateKey || "-")}</td><td>${escapeHtml(row.status || "-")}</td></tr>`).join("")}
+    </tbody></table>
+  `;
+}
+
+function renderReminders() {
+  if (!isPrivileged()) return;
+  const rows = APP_STATE.workspace.reminders || [];
+  if (!rows.length) {
+    el.remindersTable.innerHTML = "<div class='empty'>No reminders available.</div>";
+    return;
+  }
+  el.remindersTable.innerHTML = `
+    <table><thead><tr><th>Title</th><th>Type</th><th>Due</th><th>Urgency</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+      ${rows.slice(0, 100).map((row) => `
+        <tr>
+          <td>${escapeHtml(row.title || "-")}</td>
+          <td>${escapeHtml(row.reminderType || "-")}</td>
+          <td>${formatDateTime(row.dueAt)}</td>
+          <td>${escapeHtml(row.urgency || "-")}</td>
+          <td>${escapeHtml(row.status || "-")}</td>
+          <td>
+            <button class="mini" data-reminder-id="${row.id}" data-reminder-action="acknowledge">Ack</button>
+            <button class="mini" data-reminder-id="${row.id}" data-reminder-action="snooze">Snooze</button>
+            <button class="mini" data-reminder-id="${row.id}" data-reminder-action="reschedule">Reschedule</button>
+            <button class="mini" data-reminder-id="${row.id}" data-reminder-action="complete">Complete</button>
+          </td>
+        </tr>
+      `).join("")}
+    </tbody></table>
+  `;
+}
+
+function renderRecurringTemplates() {
+  if (!isPrivileged()) return;
+  const rows = APP_STATE.workspace.recurringTemplates || [];
+  if (!rows.length) {
+    el.recurringTemplatesTable.innerHTML = "<div class='empty'>No recurring templates available.</div>";
+    return;
+  }
+  el.recurringTemplatesTable.innerHTML = `
+    <table><thead><tr><th>Name</th><th>Recurrence</th><th>Assign</th><th>Next Run</th><th>Status</th><th>Action</th></tr></thead><tbody>
+      ${rows.slice(0, 100).map((row) => `
+        <tr>
+          <td>${escapeHtml(row.name || "-")}</td>
+          <td>${escapeHtml(row.recurrenceType || "-")}</td>
+          <td>${escapeHtml(row.assignMode === "department" ? (row.assignedDepartment || "-") : (row.assignedUserId || "-"))}</td>
+          <td>${formatDateTime(row.nextRunAt)}</td>
+          <td>${row.isActive ? "Active" : "Inactive"}</td>
+          <td><button class="mini" data-template-run-id="${row.id}">Run</button></td>
+        </tr>
+      `).join("")}
+    </tbody></table>
+  `;
+}
+
+function renderWeeklyReports() {
+  if (!isPrivileged()) return;
+  const rows = APP_STATE.workspace.weeklyReports || [];
+  if (!rows.length) {
+    el.weeklyReportsTable.innerHTML = "<div class='empty'>No weekly reports available.</div>";
+    return;
+  }
+  el.weeklyReportsTable.innerHTML = `
+    <table><thead><tr><th>Week</th><th>Status</th><th>Generated At</th><th>Action</th></tr></thead><tbody>
+      ${rows.slice(0, 80).map((row) => `
+        <tr>
+          <td>${escapeHtml(String(row.reportWeekStart || "-"))} to ${escapeHtml(String(row.reportWeekEnd || "-"))}</td>
+          <td>${escapeHtml(row.reportStatus || "-")}</td>
+          <td>${formatDateTime(row.generatedAt)}</td>
+          <td><button class="mini" data-report-pdf-id="${row.id}">PDF</button></td>
+        </tr>
+      `).join("")}
     </tbody></table>
   `;
 }
@@ -307,6 +573,13 @@ function bindEvents() {
   el.performanceWeightsForm.addEventListener("submit", onSavePerformanceWeights);
   el.performanceReportForm.addEventListener("submit", onGeneratePerformanceReport);
   el.resetPerformanceSnapshotsBtn.addEventListener("click", onResetPerformanceSnapshots);
+  el.reminderForm.addEventListener("submit", onCreateReminder);
+  el.recurringTemplateForm.addEventListener("submit", onCreateRecurringTemplate);
+  el.runAutomationNowBtn.addEventListener("click", onRunAutomationNow);
+  el.generateWeeklyReportBtn.addEventListener("click", onGenerateWeeklyReportNow);
+  el.remindersTable.addEventListener("click", onReminderActionClick);
+  el.recurringTemplatesTable.addEventListener("click", onTemplateRunClick);
+  el.weeklyReportsTable.addEventListener("click", onWeeklyReportsClick);
 }
 
 function resolveApiBaseUrl() {
@@ -372,6 +645,9 @@ async function refreshWorkspace() {
   APP_STATE.workspace = {
     employees: payload.employees || [],
     tasks: payload.tasks || [],
+    reminders: payload.reminders || [],
+    recurringTemplates: payload.recurringTemplates || [],
+    weeklyReports: payload.weeklyReports || [],
     vendors: payload.vendors || [],
     products: payload.products || [],
     clients: payload.clients || [],
@@ -383,7 +659,8 @@ async function refreshWorkspace() {
     activityLogs: payload.activityLogs || [],
     users: APP_STATE.workspace.users || [],
     whatsappLogs: APP_STATE.workspace.whatsappLogs || [],
-    performanceOverview: APP_STATE.workspace.performanceOverview || null
+    performanceOverview: APP_STATE.workspace.performanceOverview || null,
+    automation: payload.automation || null
   };
   if (isAdmin()) {
     const usersPayload = await api("/admin/users");
@@ -437,14 +714,14 @@ function onNavClick(event) {
 
 function renderPages() {
   const role = currentRole();
-  const allowed = role === "admin" ? ["tasks", "vendors", "sales", "po", "admin"] : ["tasks", "vendors", "sales", "po"];
+  const allowed = isPrivileged() ? ["tasks", "vendors", "sales", "po", "admin"] : ["tasks", "vendors", "sales", "po"];
   if (!allowed.includes(APP_STATE.page)) APP_STATE.page = "tasks";
   Object.entries(el.pages).forEach(([name, node]) => {
     node.classList.toggle("active", name === APP_STATE.page);
   });
   [...el.navList.querySelectorAll("button[data-page]")].forEach((button) => {
     button.classList.toggle("active", button.dataset.page === APP_STATE.page);
-    button.classList.toggle("hidden", button.dataset.page === "admin" && !isAdmin());
+    button.classList.toggle("hidden", button.dataset.page === "admin" && !isPrivileged());
   });
   el.pageTitle.textContent = APP_STATE.page === "sales"
     ? "Sales & Orders"
@@ -472,6 +749,9 @@ function renderAll() {
   renderActivityLogs();
   renderWhatsappLogs();
   renderPerformanceOverview();
+  renderReminders();
+  renderRecurringTemplates();
+  renderWeeklyReports();
 }
 
 function renderSelectors() {
@@ -488,6 +768,9 @@ function renderSelectors() {
   el.orderProductId.innerHTML = productOptions || "<option value=\"\">No products</option>";
   el.poVendorId.innerHTML = vendorOptions || "<option value=\"\">No vendors</option>";
   el.poAssignedEmployeeId.innerHTML = employeeOptionsWithBlank;
+  el.whatsappTestEmployeeId.innerHTML = employeeOptions || "<option value=\"\">No employees</option>";
+  el.reminderAssignedUserId.innerHTML = employeeOptionsWithBlank;
+  el.templateAssignedUserId.innerHTML = employeeOptionsWithBlank;
 
   const canManageEmployeesAndTasks = isPrivileged();
   const canManageSalesAndVendors = Boolean(APP_STATE.session?.token);

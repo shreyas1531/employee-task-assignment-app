@@ -304,6 +304,64 @@
               <div id="performanceOverviewTable" class="table-wrap"></div>
             </article>
           </div>
+          <div class="grid two">
+            <article class="card">
+              <h3>Reminder Management</h3>
+              <form id="reminderForm" class="form-grid">
+                <label>Title<input id="reminderTitle" type="text" required></label>
+                <label>Type
+                  <select id="reminderType"><option value="one_time">One-time</option><option value="recurring">Recurring</option></select>
+                </label>
+                <label>Recurrence
+                  <select id="reminderRecurrenceType">
+                    <option value="">None</option><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="fortnightly">Fortnightly</option><option value="monthly">Monthly</option><option value="quarterly">Quarterly</option><option value="yearly">Yearly</option><option value="custom">Custom</option>
+                  </select>
+                </label>
+                <label>Custom Interval Days<input id="reminderCustomIntervalDays" type="number" min="1" placeholder="Only for custom"></label>
+                <label>Assign Employee<select id="reminderAssignedUserId"></select></label>
+                <label>Assign Department<input id="reminderAssignedDepartment" type="text" placeholder="Optional"></label>
+                <label>Due At<input id="reminderDueAt" type="datetime-local" required></label>
+                <label>Urgency
+                  <select id="reminderUrgency"><option>Critical</option><option>High</option><option selected>Medium</option><option>Low</option></select>
+                </label>
+                <label>Remind Before (min)<input id="reminderBeforeMinutes" type="number" min="1" value="60"></label>
+                <label>Escalate After (min)<input id="reminderEscalateMinutes" type="number" min="1" value="120"></label>
+                <label>Description<textarea id="reminderDescription" rows="2"></textarea></label>
+                <button type="submit">Create Reminder</button>
+              </form>
+              <div id="remindersTable" class="table-wrap"></div>
+            </article>
+            <article class="card">
+              <h3>Recurring Task Automation</h3>
+              <form id="recurringTemplateForm" class="form-grid">
+                <label>Name<input id="templateName" type="text" required></label>
+                <label>Recurrence
+                  <select id="templateRecurrenceType"><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="fortnightly">Fortnightly</option><option value="monthly">Monthly</option><option value="quarterly">Quarterly</option><option value="custom">Custom</option></select>
+                </label>
+                <label>Custom Interval Days<input id="templateCustomIntervalDays" type="number" min="1"></label>
+                <label>Assign Mode
+                  <select id="templateAssignMode"><option value="individual">Individual</option><option value="department">Department</option></select>
+                </label>
+                <label>Assign Employee<select id="templateAssignedUserId"></select></label>
+                <label>Assign Department<input id="templateAssignedDepartment" type="text"></label>
+                <label>Due After (hours)<input id="templateDueAfterHours" type="number" min="1" value="24"></label>
+                <label>Starts At<input id="templateStartsAt" type="datetime-local" required></label>
+                <label>Urgency<select id="templateUrgency"><option>Critical</option><option>High</option><option selected>Medium</option><option>Low</option></select></label>
+                <label>Description<textarea id="templateDescription" rows="2"></textarea></label>
+                <label>Instructions<textarea id="templateInstructions" rows="2"></textarea></label>
+                <button type="submit">Create Template</button>
+              </form>
+              <div class="toolbar"><button id="runAutomationNowBtn" type="button">Run Automation Now</button></div>
+              <div id="recurringTemplatesTable" class="table-wrap"></div>
+            </article>
+          </div>
+          <article class="card">
+            <div class="toolbar">
+              <h3>Weekly Reports</h3>
+              <button id="generateWeeklyReportBtn" type="button">Generate Weekly Report</button>
+            </div>
+            <div id="weeklyReportsTable" class="table-wrap"></div>
+          </article>
         </section>
       </section>
     </section>
