@@ -70,6 +70,26 @@ body {
   padding: 1rem;
 }
 .auth-card { width: min(460px, 100%); }
+.auth-logo-wrap {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 72px;
+  margin-bottom: 1rem;
+  animation: logo-fade-in 360ms ease-out both;
+}
+.auth-logo {
+  width: min(220px, 64%);
+  max-width: 100%;
+  height: auto;
+  object-fit: contain;
+  display: block;
+  filter: brightness(1);
+  transition: filter 180ms ease;
+}
+.auth-logo:hover {
+  filter: brightness(1.05);
+}
 .form-grid { display: grid; gap: 0.65rem; }
 .form-grid label {
   display: grid;
@@ -171,6 +191,13 @@ th { font-size: 0.82rem; color: var(--muted); text-transform: uppercase; letter-
 }
 .toast.success { background: var(--success); }
 .toast.error { background: var(--danger); }
+@keyframes logo-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .auth-logo-wrap { animation: none; }
+}
 @media (max-width: 1100px) {
   .workspace { grid-template-columns: 1fr; }
   .sidebar { position: sticky; top: 0; z-index: 10; }
