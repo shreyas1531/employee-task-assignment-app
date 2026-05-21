@@ -51,6 +51,7 @@
                 <label>Email<input id="employeeEmail" type="email" placeholder="employee@company.com"></label>
                 <label>Password<input id="employeePassword" type="text" placeholder="Minimum 8 characters"></label>
                 <label>Phone<input id="employeePhone" type="text" placeholder="9199..."></label>
+                <label>Department<input id="employeeDepartment" type="text" placeholder="Operations"></label>
                 <button type="submit">Create Employee</button>
               </form>
             </article>
@@ -107,8 +108,16 @@
                 <label>Vendor<select id="productVendorId"></select></label>
                 <label>Name<input id="productName" type="text" required></label>
                 <label>Item Code<input id="productItemCode" type="text" required></label>
+                <label>SKU<input id="productSku" type="text"></label>
                 <label>Quantity<input id="productQuantity" type="number" min="0" value="0"></label>
+                <label>Min Stock Threshold<input id="productMinimumStockThreshold" type="number" min="0" value="0"></label>
+                <label>Unit Price<input id="productUnitPrice" type="number" min="0" step="0.01" value="0"></label>
                 <label>Category<input id="productCategory" type="text"></label>
+                <label>Status
+                  <select id="productStatus"><option>Active</option><option>Inactive</option><option>Discontinued</option></select>
+                </label>
+                <label>Description<textarea id="productDescription" rows="2"></textarea></label>
+                <label>Image URL<input id="productImageUrl" type="url"></label>
                 <label>Stock Status
                   <select id="productStockStatus"><option>In Stock</option><option>Low Stock</option><option>Out of Stock</option></select>
                 </label>
@@ -129,6 +138,15 @@
                 <h3>Products</h3>
                 <input id="productSearch" type="search" placeholder="Search products">
               </div>
+              <form id="stockMovementForm" class="form-grid">
+                <label>Product<select id="stockMovementProductId"></select></label>
+                <label>Movement
+                  <select id="stockMovementType"><option value="stock_in">Stock In</option><option value="stock_out">Stock Out</option><option value="adjustment">Adjustment</option></select>
+                </label>
+                <label>Quantity<input id="stockMovementQuantity" type="number" min="1" value="1"></label>
+                <label>Notes<input id="stockMovementNotes" type="text"></label>
+                <button type="submit">Adjust Stock</button>
+              </form>
               <div id="productTable" class="table-wrap"></div>
             </article>
           </div>
@@ -246,6 +264,38 @@
             <h3>Recent Activity</h3>
             <div id="activityLogsTable" class="table-wrap"></div>
           </article>
+          <div class="grid two">
+            <article class="card">
+              <h3>WhatsApp Notifications</h3>
+              <form id="announcementForm" class="form-grid">
+                <label>Announcement Message<textarea id="announcementMessage" rows="2"></textarea></label>
+                <button type="submit">Broadcast Announcement</button>
+              </form>
+              <form id="whatsappTestForm" class="form-grid">
+                <label>Employee<select id="whatsappTestEmployeeId"></select></label>
+                <label>Test Message<input id="whatsappTestMessage" type="text"></label>
+                <button type="submit">Send Test Message</button>
+              </form>
+              <div class="toolbar"><button id="processWhatsappQueueBtn" type="button">Process Queue</button></div>
+              <div id="whatsappLogsTable" class="table-wrap"></div>
+            </article>
+            <article class="card">
+              <h3>Performance</h3>
+              <form id="performanceWeightsForm" class="form-grid">
+                <label>On-time Weight<input id="weightOnTime" type="number" value="10"></label>
+                <label>Late Completion Weight<input id="weightLate" type="number" value="5"></label>
+                <label>Overdue Weight<input id="weightOverdue" type="number" value="-8"></label>
+                <label>Unfinished Weight<input id="weightUnfinished" type="number" value="-10"></label>
+                <button type="submit">Save Weights</button>
+              </form>
+              <form id="performanceReportForm" class="form-grid">
+                <label>Month<input id="performanceReportMonth" type="month"></label>
+                <button type="submit">Generate Monthly Report</button>
+              </form>
+              <div class="toolbar"><button id="resetPerformanceSnapshotsBtn" type="button">Reset Snapshots</button></div>
+              <div id="performanceOverviewTable" class="table-wrap"></div>
+            </article>
+          </div>
         </section>
       </section>
     </section>

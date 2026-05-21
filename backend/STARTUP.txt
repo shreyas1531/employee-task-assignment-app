@@ -121,3 +121,12 @@ Operational notes
 - Frontend uses same-origin API requests at `/api` by default.
 - Optional frontend API override remains available via `window.TASK_APP_API_BASE_URL` in `index.html`.
 - For phased enterprise rollout, monitoring, rollback, and access governance, follow `ROLLOUT_RUNBOOK.txt`.
+
+WhatsApp / performance / inventory extension notes
+- Run migrations after pulling latest code: `bundle exec ruby scripts/setup_db.rb`.
+- Set Twilio variables: `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_WHATSAPP_FROM`, and optional `WHATSAPP_MAX_RETRIES`.
+- Admin module now includes:
+  - WhatsApp log processing (`/api/whatsapp/process`, `/api/whatsapp/logs`, `/api/whatsapp/test-message`)
+  - Announcements (`/api/admin/announcements`)
+  - Performance controls (`/api/performance/overview`, `/api/admin/performance/weights`, `/api/admin/performance/reports`, `/api/admin/performance/reset`)
+- Product grid supports extended product attributes and manual stock adjustment endpoint `/api/products/:product_id/stock-movements`.
