@@ -1225,6 +1225,23 @@ class TaskAssignmentAPI < Sinatra::Base
     send_frontend_file("app.js", "application/javascript")
   end
 
+  get "/assets/:filename" do
+    filename = params[:filename].to_s
+    halt 404, "Not found." if filename.empty? || filename.include?("/") || filename.include?("\\") || filename.include?("..")
+
+    ext = File.extname(filename).downcase
+    mime_type = case ext
+    when ".svg" then "image/svg+xml"
+    when ".png" then "image/png"
+    when ".jpg", ".jpeg" then "image/jpeg"
+    when ".webp" then "image/webp"
+    when ".gif" then "image/gif"
+    else "application/octet-stream"
+    end
+
+    send_frontend_file("assets/#{filename}", mime_type)
+  end
+
   get "/favicon.ico" do
     status 204
   end
