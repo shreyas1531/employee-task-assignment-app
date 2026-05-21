@@ -31,6 +31,13 @@ class TaskAssignmentAPI < Sinatra::Base
   STOCK_STATUSES = ["In Stock", "Low Stock", "Out of Stock"].freeze
   PRODUCT_STATUSES = ["Active", "Inactive", "Discontinued"].freeze
   ORDER_STATUSES = %w[Pending Processing Delivered Cancelled].freeze
+  REMINDER_TYPES = %w[one_time recurring].freeze
+  REMINDER_RECURRENCE_TYPES = %w[daily weekly fortnightly monthly quarterly yearly custom].freeze
+  REMINDER_URGENCY_LEVELS = %w[Critical High Medium Low].freeze
+  REMINDER_STATUSES = %w[Scheduled Acknowledged Snoozed Completed Overdue Cancelled].freeze
+  RECURRING_TEMPLATE_TYPES = %w[daily weekly fortnightly monthly quarterly custom].freeze
+  RECURRING_ASSIGN_MODES = %w[individual department].freeze
+  WEEKLY_REPORT_STATUSES = %w[generated sent failed].freeze
   class << self
     def runtime_database_url_candidates
       rack_env_key = ENV.fetch("RACK_ENV", "development").to_s.strip.upcase
@@ -102,6 +109,8 @@ class TaskAssignmentAPI < Sinatra::Base
     set :logging, true
     set :rate_limit_store, {}
     set :rate_limit_mutex, Mutex.new
+    set :scheduler_state, {}
+    set :scheduler_mutex, Mutex.new
     set :frontend_root, frontend_root.empty? ? File.expand_path("..", __dir__) : File.expand_path(frontend_root, __dir__)
     if ENV.fetch("DB_STARTUP_CHECKS", "1") == "1"
       TaskAssignmentAPI.validate_startup_database!
@@ -404,6 +413,73 @@ class TaskAssignmentAPI < Sinatra::Base
       }
     end
 
+    def serialize_reminder_row(row)
+      {
+        id: row["id"],
+        title: row["title"],
+        description: row["description"] || "",
+        reminderType: row["reminder_type"],
+        recurrenceType: row["recurrence_type"],
+        customIntervalDays: row["custom_interval_days"]&.to_i,
+        urgency: row["urgency"],
+        assignedUserId: row["assigned_user_id"],
+        assignedDepartment: row["assigned_department"],
+        createdBy: row["created_by"],
+        dueAt: row["due_at"],
+        nextRunAt: row["next_run_at"],
+        remindBeforeMinutes: row["remind_before_minutes"].to_i,
+        escalateAfterMinutes: row["escalate_after_minutes"].to_i,
+        status: row["status"],
+        acknowledgedAt: row["acknowledged_at"],
+        completedAt: row["completed_at"],
+        lastNotifiedAt: row["last_notified_at"],
+        isActive: row["is_active"] == "t",
+        metadata: parse_json_column(row["metadata"], {}),
+        createdAt: row["created_at"],
+        updatedAt: row["updated_at"]
+      }
+    end
+
+    def serialize_recurring_template_row(row)
+      {
+        id: row["id"],
+        name: row["name"],
+        description: row["description"] || "",
+        instructions: row["instructions"] || "",
+        recurrenceType: row["recurrence_type"],
+        customIntervalDays: row["custom_interval_days"]&.to_i,
+        urgency: row["urgency"],
+        assignMode: row["assign_mode"],
+        assignedUserId: row["assigned_user_id"],
+        assignedDepartment: row["assigned_department"],
+        dueAfterHours: row["due_after_hours"].to_i,
+        startsAt: row["starts_at"],
+        nextRunAt: row["next_run_at"],
+        timezone: row["timezone"] || "Asia/Kolkata",
+        isActive: row["is_active"] == "t",
+        lastGeneratedAt: row["last_generated_at"],
+        createdBy: row["created_by"],
+        createdAt: row["created_at"],
+        updatedAt: row["updated_at"]
+      }
+    end
+
+    def serialize_weekly_report_row(row)
+      {
+        id: row["id"],
+        reportWeekStart: row["report_week_start"],
+        reportWeekEnd: row["report_week_end"],
+        reportStatus: row["report_status"],
+        generatedBy: row["generated_by"],
+        generatedAt: row["generated_at"],
+        summary: parse_json_column(row["summary"], {}),
+        pdfUrl: row["pdf_url"],
+        whatsappSummarySentAt: row["whatsapp_summary_sent_at"],
+        emailDispatchPlanned: row["email_dispatch_planned"] == "t",
+        createdAt: row["created_at"]
+      }
+    end
+
     def create_activity_log(actor:, action:, entity_type:, entity_id: nil, details: nil)
       db_exec(
         <<~SQL,
@@ -649,6 +725,9 @@ class TaskAssignmentAPI < Sinatra::Base
                  u.email,
                  u.full_name,
                  u.phone,
+                 u.phone_number,
+                 u.department,
+                 u.is_active,
                  u.role,
                  u.created_at,
                  u.updated_at,
@@ -1200,6 +1279,441 @@ class TaskAssignmentAPI < Sinatra::Base
       { previousQuantity: previous_quantity, newQuantity: next_quantity, stockStatus: stock_status }
     end
 
+    def scheduler_timezone
+      value = ENV.fetch("SCHEDULER_TIMEZONE", "Asia/Kolkata").to_s.strip
+      value.empty? ? "Asia/Kolkata" : value
+    end
+
+    def reminder_priority_rank(value)
+      case value.to_s
+      when "Critical" then 1
+      when "High" then 2
+      when "Medium" then 3
+      else 4
+      end
+    end
+
+    def reminder_next_run_at(reference_time:, recurrence_type:, custom_interval_days:)
+      case recurrence_type
+      when "daily" then reference_time + (24 * 60 * 60)
+      when "weekly" then reference_time + (7 * 24 * 60 * 60)
+      when "fortnightly" then reference_time + (14 * 24 * 60 * 60)
+      when "monthly" then reference_time + (30 * 24 * 60 * 60)
+      when "quarterly" then reference_time + (90 * 24 * 60 * 60)
+      when "yearly" then reference_time + (365 * 24 * 60 * 60)
+      when "custom"
+        interval_days = [custom_interval_days.to_i, 1].max
+        reference_time + (interval_days * 24 * 60 * 60)
+      else
+        nil
+      end
+    end
+
+    def recurring_template_next_run_at(reference_time:, recurrence_type:, custom_interval_days:)
+      reminder_next_run_at(
+        reference_time: reference_time,
+        recurrence_type: recurrence_type,
+        custom_interval_days: custom_interval_days
+      )
+    end
+
+    def reminder_assignee_ids_for(reminder_row)
+      direct_user_id = reminder_row["assigned_user_id"].to_s.strip
+      return [direct_user_id] unless direct_user_id.empty?
+      department = reminder_row["assigned_department"].to_s.strip
+      return [] if department.empty?
+      db_exec(
+        <<~SQL,
+          SELECT id
+          FROM users
+          WHERE role IN ('employee', 'manager')
+            AND is_active = TRUE
+            AND LOWER(COALESCE(department, '')) = LOWER($1)
+        SQL
+        [department]
+      ).map { |row| row["id"] }
+    end
+
+    def log_reminder_history(reminder_id:, action_type:, actor_user_id: nil, details: {})
+      db_exec(
+        <<~SQL,
+          INSERT INTO reminder_history_logs (id, reminder_id, action_type, actor_user_id, details, created_at)
+          VALUES (gen_random_uuid(), $1, $2, $3, $4::jsonb, NOW())
+        SQL
+        [reminder_id, action_type, actor_user_id, JSON.generate(details || {})]
+      )
+    end
+
+    def create_reminder_notifications!(reminder_row:, notification_note:, initiated_by_user_id: nil)
+      reminder_assignee_ids_for(reminder_row).each do |user_id|
+        create_notification(
+          employee_id: user_id,
+          task_id: nil,
+          type: "reminder",
+          channel: "app",
+          message: notification_note
+        )
+        user = db_exec("SELECT id, full_name FROM users WHERE id = $1 LIMIT 1", [user_id]).first
+        next unless user
+        enqueue_whatsapp_notification(
+          employee_id: user_id,
+          template_key: "admin_announcement",
+          dedupe_key: "reminder-#{reminder_row['id']}-#{Digest::SHA256.hexdigest(notification_note)}-#{user_id}",
+          payload: { announcement: notification_note },
+          created_by: initiated_by_user_id
+        )
+      end
+    end
+
+    def process_reminders!(limit: 200, actor_user_id: nil)
+      rows = db_exec(
+        <<~SQL,
+          SELECT id, title, description, reminder_type, recurrence_type, custom_interval_days, urgency,
+                 assigned_user_id, assigned_department, due_at, next_run_at, remind_before_minutes,
+                 escalate_after_minutes, status, acknowledged_at, completed_at, last_notified_at,
+                 is_active, metadata, created_at, updated_at
+          FROM reminders
+          WHERE is_active = TRUE
+            AND status <> 'Cancelled'
+          ORDER BY due_at ASC
+          LIMIT $1
+        SQL
+        [limit]
+      ).to_a
+      now = Time.now.utc
+      rows.each do |row|
+        due_at = Time.parse(row["due_at"])
+        remind_before = row["remind_before_minutes"].to_i
+        notify_time = due_at - (remind_before * 60)
+        last_notified_at = row["last_notified_at"] ? Time.parse(row["last_notified_at"]) : nil
+        if now >= notify_time && (last_notified_at.nil? || (now - last_notified_at) > (remind_before * 30))
+          note = "Reminder: #{row['title']} is due at #{due_at.utc.iso8601} (#{row['urgency']})."
+          create_reminder_notifications!(reminder_row: row, notification_note: note, initiated_by_user_id: actor_user_id)
+          db_exec(
+            <<~SQL,
+              UPDATE reminders
+              SET last_notified_at = NOW(),
+                  updated_at = NOW()
+              WHERE id = $1
+            SQL
+            [row["id"]]
+          )
+          log_reminder_history(
+            reminder_id: row["id"],
+            action_type: "notified",
+            actor_user_id: actor_user_id,
+            details: { reason: "due_window", notifyTime: notify_time.utc.iso8601 }
+          )
+        end
+
+        if now > due_at && %w[Scheduled Acknowledged Snoozed].include?(row["status"])
+          db_exec(
+            <<~SQL,
+              UPDATE reminders
+              SET status = 'Overdue',
+                  updated_at = NOW()
+              WHERE id = $1
+            SQL
+            [row["id"]]
+          )
+          escalate_minutes = row["escalate_after_minutes"].to_i
+          if (now - due_at) >= (escalate_minutes * 60)
+            escalation_note = "Escalation: reminder '#{row['title']}' is overdue."
+            create_reminder_notifications!(reminder_row: row, notification_note: escalation_note, initiated_by_user_id: actor_user_id)
+            log_reminder_history(
+              reminder_id: row["id"],
+              action_type: "escalated",
+              actor_user_id: actor_user_id,
+              details: { escalateAfterMinutes: escalate_minutes }
+            )
+          end
+        end
+
+        next unless row["reminder_type"] == "recurring"
+        next unless row["status"] == "Completed"
+        next_run = reminder_next_run_at(
+          reference_time: now,
+          recurrence_type: row["recurrence_type"],
+          custom_interval_days: row["custom_interval_days"]
+        )
+        next unless next_run
+        db_exec(
+          <<~SQL,
+            UPDATE reminders
+            SET status = 'Scheduled',
+                completed_at = NULL,
+                acknowledged_at = NULL,
+                due_at = $1,
+                next_run_at = $1,
+                updated_at = NOW()
+            WHERE id = $2
+          SQL
+          [next_run.utc.iso8601, row["id"]]
+        )
+        log_reminder_history(
+          reminder_id: row["id"],
+          action_type: "auto_generated",
+          actor_user_id: actor_user_id,
+          details: { nextRunAt: next_run.utc.iso8601 }
+        )
+      end
+      rows.length
+    end
+
+    def process_recurring_templates!(limit: 100, actor_user_id: nil)
+      templates = db_exec(
+        <<~SQL,
+          SELECT id, name, description, instructions, recurrence_type, custom_interval_days, urgency,
+                 assign_mode, assigned_user_id, assigned_department, due_after_hours, starts_at, next_run_at,
+                 timezone, is_active, last_generated_at, created_by, created_at, updated_at
+          FROM recurring_task_templates
+          WHERE is_active = TRUE
+            AND next_run_at <= NOW()
+          ORDER BY next_run_at ASC
+          LIMIT $1
+        SQL
+        [limit]
+      ).to_a
+      generated = 0
+      now = Time.now.utc
+      templates.each do |template|
+        scheduled_for = Time.parse(template["next_run_at"]).utc
+        target_user_ids = if template["assign_mode"] == "department"
+          db_exec(
+            <<~SQL,
+              SELECT id
+              FROM users
+              WHERE role = 'employee'
+                AND is_active = TRUE
+                AND LOWER(COALESCE(department, '')) = LOWER($1)
+            SQL
+            [template["assigned_department"].to_s]
+          ).map { |row| row["id"] }
+        else
+          value = template["assigned_user_id"].to_s.strip
+          value.empty? ? [] : [value]
+        end
+
+        if target_user_ids.empty?
+          db_exec(
+            <<~SQL,
+              INSERT INTO recurring_task_runs (id, template_id, scheduled_for, run_status, run_message, created_at)
+              VALUES (gen_random_uuid(), $1, $2, 'skipped', $3, NOW())
+              ON CONFLICT (template_id, scheduled_for) DO NOTHING
+            SQL
+            [template["id"], scheduled_for.iso8601, "No eligible assignee found."]
+          )
+        else
+          target_user_ids.each do |user_id|
+            run_row = db_exec(
+              <<~SQL,
+                INSERT INTO recurring_task_runs (id, template_id, scheduled_for, generated_for_user_id, run_status, run_message, created_at)
+                VALUES (gen_random_uuid(), $1, $2, $3, 'generated', 'Task generated', NOW())
+                ON CONFLICT (template_id, scheduled_for) DO NOTHING
+                RETURNING id
+              SQL
+              [template["id"], scheduled_for.iso8601, user_id]
+            ).first
+            next unless run_row
+            due_at = scheduled_for + ([template["due_after_hours"].to_i, 1].max * 60 * 60)
+            task = db_exec(
+              <<~SQL,
+                INSERT INTO tasks (
+                  id, title, description, assignee_id, due_at, urgency, status,
+                  reminder_every_minutes, persistent_reminders, next_reminder_at, last_reminder_at,
+                  attachments, created_by, recurring_template_id, recurring_run_id, created_at, updated_at, completed_at
+                )
+                VALUES (
+                  gen_random_uuid(), $1, $2, $3, $4, $5, 'Pending',
+                  60, TRUE, NOW() + interval '60 minutes', NULL,
+                  '[]'::jsonb, $6, $7, $8, NOW(), NOW(), NULL
+                )
+                RETURNING id, title
+              SQL
+              [
+                template["name"],
+                [template["description"], template["instructions"]].compact.join("\n"),
+                user_id,
+                due_at.utc.iso8601,
+                template["urgency"],
+                actor_user_id || template["created_by"],
+                template["id"],
+                run_row["id"]
+              ]
+            ).first
+            db_exec(
+              <<~SQL,
+                UPDATE recurring_task_runs
+                SET generated_task_id = $1
+                WHERE id = $2
+              SQL
+              [task["id"], run_row["id"]]
+            )
+            create_notification(
+              employee_id: user_id,
+              task_id: task["id"],
+              type: "assignment",
+              channel: "app",
+              message: "Recurring task assigned: #{task['title']}."
+            )
+            generated += 1
+          end
+        end
+
+        next_run = recurring_template_next_run_at(
+          reference_time: scheduled_for,
+          recurrence_type: template["recurrence_type"],
+          custom_interval_days: template["custom_interval_days"]
+        )
+        db_exec(
+          <<~SQL,
+            UPDATE recurring_task_templates
+            SET last_generated_at = NOW(),
+                next_run_at = $1,
+                updated_at = NOW()
+            WHERE id = $2
+          SQL
+          [next_run&.utc&.iso8601, template["id"]]
+        )
+      end
+      generated
+    end
+
+    def previous_week_window(reference_time = Time.now.utc)
+      current_date = reference_time.getlocal("+05:30").to_date
+      monday_this_week = current_date - ((current_date.wday + 6) % 7)
+      week_start = monday_this_week - 7
+      week_end = monday_this_week - 1
+      [week_start, week_end]
+    end
+
+    def build_weekly_report_payload(week_start:, week_end:)
+      employees = db_exec(
+        <<~SQL
+          SELECT id, full_name, department
+          FROM users
+          WHERE role = 'employee'
+            AND is_active = TRUE
+          ORDER BY full_name ASC
+        SQL
+      ).to_a
+      start_iso = Time.utc(week_start.year, week_start.month, week_start.day).iso8601
+      end_iso = Time.utc(week_end.year, week_end.month, week_end.day, 23, 59, 59).iso8601
+
+      employee_rows = employees.map do |employee|
+        stats = compute_employee_performance(employee_id: employee["id"], start_at: start_iso, end_at: end_iso)
+        {
+          employeeId: employee["id"],
+          employeeName: employee["full_name"],
+          department: employee["department"] || "General",
+          totalTasksAssigned: stats[:pendingTasks].to_i + stats[:tasksCompletedOnTime].to_i + stats[:lateCompletedTasks].to_i + stats[:cancelledTasks].to_i,
+          totalTasksCompleted: stats[:tasksCompletedOnTime].to_i + stats[:lateCompletedTasks].to_i,
+          overdueTasks: stats[:overdueTasks].to_i,
+          pendingTasks: stats[:pendingTasks].to_i,
+          completionPercentage: stats[:completionPercentage],
+          performanceGrade: stats[:grade],
+          onTimeCompletionRate: stats[:completionPercentage].to_f.positive? ? ((stats[:tasksCompletedOnTime].to_f / [stats[:tasksCompletedOnTime].to_i + stats[:lateCompletedTasks].to_i, 1].max) * 100.0).round(2) : 0.0
+        }
+      end
+
+      sorted_by_completion = employee_rows.sort_by { |row| -row[:completionPercentage].to_f }
+      sorted_by_overdue = employee_rows.sort_by { |row| -row[:overdueTasks].to_i }
+      department_summary = employee_rows.group_by { |row| row[:department] }.map do |department, rows|
+        {
+          department: department,
+          employees: rows.length,
+          avgCompletionPercentage: (rows.sum { |row| row[:completionPercentage].to_f } / [rows.length, 1].max).round(2),
+          overdueTasks: rows.sum { |row| row[:overdueTasks].to_i }
+        }
+      end
+
+      {
+        weekStart: week_start.to_s,
+        weekEnd: week_end.to_s,
+        generatedAt: Time.now.utc.iso8601,
+        employeeReports: employee_rows,
+        managerSummary: {
+          topPerformers: sorted_by_completion.first(5),
+          lowestCompletionRates: sorted_by_completion.last(5).reverse,
+          departmentSummaries: department_summary,
+          overdueTaskTrend: sorted_by_overdue.first(10)
+        }
+      }
+    end
+
+    def create_simple_pdf_bytes(title:, lines:)
+      content_lines = ["BT /F1 14 Tf 40 780 Td (#{title.gsub(/[()]/, '')}) Tj ET"]
+      y = 760
+      lines.each do |line|
+        sanitized = line.to_s.gsub(/[()]/, "")
+        content_lines << "BT /F1 10 Tf 40 #{y} Td (#{sanitized[0, 120]}) Tj ET"
+        y -= 14
+        break if y < 80
+      end
+      stream = content_lines.join("\n")
+      pdf = +"%PDF-1.4\n"
+      objects = []
+      objects << "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n"
+      objects << "2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n"
+      objects << "3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >> endobj\n"
+      objects << "4 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n"
+      objects << "5 0 obj << /Length #{stream.bytesize} >> stream\n#{stream}\nendstream endobj\n"
+      offsets = []
+      objects.each do |obj|
+        offsets << pdf.bytesize
+        pdf << obj
+      end
+      xref_offset = pdf.bytesize
+      pdf << "xref\n0 #{objects.length + 1}\n0000000000 65535 f \n"
+      offsets.each { |offset| pdf << format("%010d 00000 n \n", offset) }
+      pdf << "trailer << /Size #{objects.length + 1} /Root 1 0 R >>\nstartxref\n#{xref_offset}\n%%EOF\n"
+      pdf
+    end
+
+    def generate_weekly_report!(week_start:, week_end:, actor_user_id: nil)
+      payload = build_weekly_report_payload(week_start: week_start, week_end: week_end)
+      row = db_exec(
+        <<~SQL,
+          INSERT INTO weekly_employee_reports (
+            id, report_week_start, report_week_end, report_status, generated_by, generated_at, summary, created_at
+          )
+          VALUES (gen_random_uuid(), $1, $2, 'generated', $3, NOW(), $4::jsonb, NOW())
+          ON CONFLICT (report_week_start, report_week_end)
+          DO UPDATE SET summary = EXCLUDED.summary, generated_by = EXCLUDED.generated_by, generated_at = NOW(), report_status = 'generated'
+          RETURNING id
+        SQL
+        [week_start.to_s, week_end.to_s, actor_user_id, JSON.generate(payload)]
+      ).first
+      row["id"]
+    end
+
+    def process_weekly_reports!(actor_user_id: nil)
+      week_start, week_end = previous_week_window(Time.now.utc)
+      now_in_ist = Time.now.getlocal("+05:30")
+      return nil unless now_in_ist.wday == 1
+      return nil if now_in_ist.hour < Integer(ENV.fetch("WEEKLY_REPORT_RUN_HOUR_IST", "9"))
+      generate_weekly_report!(week_start: week_start, week_end: week_end, actor_user_id: actor_user_id)
+    end
+
+    def process_scheduled_automation!(actor_user_id: nil)
+      throttle_seconds = Integer(ENV.fetch("AUTOMATION_THROTTLE_SECONDS", "120"))
+      should_run = false
+      settings.scheduler_mutex.synchronize do
+        last_run = settings.scheduler_state[:last_automation_run]
+        now = Time.now.to_i
+        if last_run.nil? || (now - last_run) >= throttle_seconds
+          settings.scheduler_state[:last_automation_run] = now
+          should_run = true
+        end
+      end
+      return { remindersProcessed: 0, recurringTasksGenerated: 0, weeklyReportId: nil } unless should_run
+      {
+        remindersProcessed: process_reminders!(actor_user_id: actor_user_id),
+        recurringTasksGenerated: process_recurring_templates!(actor_user_id: actor_user_id),
+        weeklyReportId: process_weekly_reports!(actor_user_id: actor_user_id)
+      }
+    end
+
     def send_frontend_file(filename, mime_type)
       path = File.expand_path(filename, settings.frontend_root)
       halt 404, "Not found." unless File.file?(path)
@@ -1583,6 +2097,55 @@ class TaskAssignmentAPI < Sinatra::Base
       notification_params
     ).map { |row| serialize_notification_row(row) }
 
+    reminder_filter = ""
+    reminder_params = []
+    unless privileged_user
+      reminder_filter = "WHERE r.is_active = TRUE AND (r.assigned_user_id = $1 OR LOWER(COALESCE(r.assigned_department, '')) = LOWER($2))"
+      reminder_params = [user[:id], user[:department].to_s]
+    end
+    reminders = db_exec(
+      <<~SQL,
+        SELECT r.id, r.title, r.description, r.reminder_type, r.recurrence_type, r.custom_interval_days, r.urgency,
+               r.assigned_user_id, r.assigned_department, r.created_by, r.due_at, r.next_run_at, r.remind_before_minutes,
+               r.escalate_after_minutes, r.status, r.acknowledged_at, r.completed_at, r.last_notified_at, r.is_active,
+               r.metadata, r.created_at, r.updated_at
+        FROM reminders r
+        #{reminder_filter}
+        ORDER BY r.due_at ASC
+        LIMIT 300
+      SQL
+      reminder_params
+    ).map { |row| serialize_reminder_row(row) }
+
+    recurring_templates = if privileged_user
+      db_exec(
+        <<~SQL
+          SELECT id, name, description, instructions, recurrence_type, custom_interval_days, urgency, assign_mode,
+                 assigned_user_id, assigned_department, due_after_hours, starts_at, next_run_at, timezone, is_active,
+                 last_generated_at, created_by, created_at, updated_at
+          FROM recurring_task_templates
+          ORDER BY created_at DESC
+          LIMIT 200
+        SQL
+      ).map { |row| serialize_recurring_template_row(row) }
+    else
+      []
+    end
+
+    weekly_reports = if privileged_user
+      db_exec(
+        <<~SQL
+          SELECT id, report_week_start, report_week_end, report_status, generated_by, generated_at, summary,
+                 pdf_url, whatsapp_summary_sent_at, email_dispatch_planned, created_at
+          FROM weekly_employee_reports
+          ORDER BY report_week_start DESC, created_at DESC
+          LIMIT 100
+        SQL
+      ).map { |row| serialize_weekly_report_row(row) }
+    else
+      []
+    end
+
     message_filter = ""
     message_params = []
     unless privileged_user
@@ -1667,6 +2230,11 @@ class TaskAssignmentAPI < Sinatra::Base
     else
       []
     end
+    automation = if privileged_user
+      process_scheduled_automation!(actor_user_id: user[:id])
+    else
+      { remindersProcessed: 0, recurringTasksGenerated: 0, weeklyReportId: nil }
+    end
     sales_analytics = build_sales_analytics(orders)
     po_analytics = build_po_analytics(purchase_orders)
     admin_metrics = if user[:role] == "admin"
@@ -1720,6 +2288,9 @@ class TaskAssignmentAPI < Sinatra::Base
       employees: employees,
       tasks: tasks,
       notifications: notifications,
+      reminders: reminders,
+      recurringTemplates: recurring_templates,
+      weeklyReports: weekly_reports,
       messages: messages,
       vendors: vendors,
       products: products,
@@ -1730,7 +2301,8 @@ class TaskAssignmentAPI < Sinatra::Base
       salesAnalytics: sales_analytics,
       poAnalytics: po_analytics,
       adminMetrics: admin_metrics,
-      activityLogs: activity_logs
+      activityLogs: activity_logs,
+      automation: automation
     )
   end
 
@@ -3294,6 +3866,325 @@ class TaskAssignmentAPI < Sinatra::Base
     )
     halt_json(404, error: "Product not found.") unless result
     JSON.generate(stock: result)
+  end
+
+  get "/api/reminders" do
+    current = require_authentication!
+    user = current[:user]
+    where_clauses = []
+    params_list = []
+    unless manager_or_admin?(user)
+      where_clauses << "(assigned_user_id = $#{params_list.length + 1} OR LOWER(COALESCE(assigned_department, '')) = LOWER($#{params_list.length + 2}))"
+      params_list << user[:id]
+      params_list << user[:department].to_s
+    end
+    if REMINDER_STATUSES.include?(params["status"].to_s)
+      where_clauses << "status = $#{params_list.length + 1}"
+      params_list << params["status"].to_s
+    end
+    where_sql = where_clauses.empty? ? "" : "WHERE #{where_clauses.join(' AND ')}"
+    rows = db_exec(
+      <<~SQL,
+        SELECT id, title, description, reminder_type, recurrence_type, custom_interval_days, urgency,
+               assigned_user_id, assigned_department, created_by, due_at, next_run_at, remind_before_minutes,
+               escalate_after_minutes, status, acknowledged_at, completed_at, last_notified_at, is_active,
+               metadata, created_at, updated_at
+        FROM reminders
+        #{where_sql}
+        ORDER BY due_at ASC
+        LIMIT 500
+      SQL
+      params_list
+    ).map { |row| serialize_reminder_row(row) }
+    JSON.generate(reminders: rows)
+  end
+
+  post "/api/reminders" do
+    current = require_manager_or_admin!
+    payload = parse_json_body
+    title = sanitize_text(payload["title"], "Reminder title", required: true, max_length: 200)
+    description = sanitize_text(payload["description"], "Reminder description", required: false, max_length: 5000)
+    reminder_type = payload["reminderType"].to_s.strip
+    reminder_type = "one_time" if reminder_type.empty?
+    halt_json(400, error: "Reminder type is invalid.") unless REMINDER_TYPES.include?(reminder_type)
+    recurrence_type = payload["recurrenceType"].to_s.strip
+    recurrence_type = nil if recurrence_type.empty?
+    if reminder_type == "recurring" && !REMINDER_RECURRENCE_TYPES.include?(recurrence_type)
+      halt_json(400, error: "Recurring reminders require a valid recurrence type.")
+    end
+    if recurrence_type && !REMINDER_RECURRENCE_TYPES.include?(recurrence_type)
+      halt_json(400, error: "Recurrence type is invalid.")
+    end
+    custom_interval_days = parse_positive_integer(payload["customIntervalDays"], "Custom interval days", min: 1, max: 3650, default: nil)
+    urgency = payload["urgency"].to_s.strip
+    urgency = "Medium" if urgency.empty?
+    halt_json(400, error: "Reminder urgency is invalid.") unless REMINDER_URGENCY_LEVELS.include?(urgency)
+    assigned_user_id = payload["assignedUserId"].to_s.strip
+    assigned_department = sanitize_text(payload["assignedDepartment"], "Assigned department", required: false, max_length: 120)
+    if assigned_user_id.empty? && assigned_department.empty?
+      halt_json(400, error: "Provide either assigned user or department.")
+    end
+    due_at = parse_timestamp(payload["dueAt"], "Reminder due date")
+    remind_before_minutes = parse_positive_integer(payload["remindBeforeMinutes"], "Reminder lead minutes", min: 1, max: 10080, default: 60)
+    escalate_after_minutes = parse_positive_integer(payload["escalateAfterMinutes"], "Escalation minutes", min: 1, max: 10080, default: 120)
+    metadata = payload["metadata"].is_a?(Hash) ? payload["metadata"] : {}
+    next_run_at = reminder_type == "recurring" ? due_at : nil
+    row = db_exec(
+      <<~SQL,
+        INSERT INTO reminders (
+          id, title, description, reminder_type, recurrence_type, custom_interval_days, urgency,
+          assigned_user_id, assigned_department, created_by, due_at, next_run_at, remind_before_minutes,
+          escalate_after_minutes, status, metadata, is_active, created_at, updated_at
+        )
+        VALUES (
+          gen_random_uuid(), $1, $2, $3, $4, $5, $6,
+          $7, $8, $9, $10, $11, $12,
+          $13, 'Scheduled', $14::jsonb, TRUE, NOW(), NOW()
+        )
+        RETURNING id, title, description, reminder_type, recurrence_type, custom_interval_days, urgency,
+                  assigned_user_id, assigned_department, created_by, due_at, next_run_at, remind_before_minutes,
+                  escalate_after_minutes, status, acknowledged_at, completed_at, last_notified_at, is_active,
+                  metadata, created_at, updated_at
+      SQL
+      [
+        title, description, reminder_type, recurrence_type, custom_interval_days, urgency, assigned_user_id.empty? ? nil : assigned_user_id,
+        assigned_department.empty? ? nil : assigned_department, current[:user][:id], due_at, next_run_at, remind_before_minutes,
+        escalate_after_minutes, JSON.generate(metadata)
+      ]
+    ).first
+    log_reminder_history(reminder_id: row["id"], action_type: "created", actor_user_id: current[:user][:id], details: { title: title })
+    JSON.generate(reminder: serialize_reminder_row(row))
+  end
+
+  post "/api/reminders/:reminder_id/actions" do
+    current = require_authentication!
+    payload = parse_json_body
+    action = payload["action"].to_s.strip.downcase
+    reminder = db_exec(
+      <<~SQL,
+        SELECT id, title, description, reminder_type, recurrence_type, custom_interval_days, urgency, assigned_user_id,
+               assigned_department, created_by, due_at, next_run_at, remind_before_minutes, escalate_after_minutes,
+               status, acknowledged_at, completed_at, last_notified_at, is_active, metadata, created_at, updated_at
+        FROM reminders
+        WHERE id = $1
+        LIMIT 1
+      SQL
+      [params[:reminder_id]]
+    ).first
+    halt_json(404, error: "Reminder not found.") unless reminder
+    user = current[:user]
+    allowed = manager_or_admin?(user) || reminder["assigned_user_id"] == user[:id] || reminder["assigned_department"].to_s.downcase == user[:department].to_s.downcase
+    halt_json(403, error: "Not allowed to modify this reminder.") unless allowed
+
+    case action
+    when "acknowledge"
+      updated = db_exec(
+        "UPDATE reminders SET status = 'Acknowledged', acknowledged_at = NOW(), updated_at = NOW() WHERE id = $1 RETURNING *",
+        [reminder["id"]]
+      ).first
+      log_reminder_history(reminder_id: reminder["id"], action_type: "acknowledged", actor_user_id: user[:id], details: {})
+      JSON.generate(reminder: serialize_reminder_row(updated))
+    when "snooze"
+      snooze_minutes = parse_positive_integer(payload["snoozeMinutes"], "Snooze minutes", min: 1, max: 10080, default: 30)
+      new_due = Time.parse(reminder["due_at"]) + (snooze_minutes * 60)
+      updated = db_exec(
+        "UPDATE reminders SET status = 'Snoozed', due_at = $1, next_run_at = $1, updated_at = NOW() WHERE id = $2 RETURNING *",
+        [new_due.utc.iso8601, reminder["id"]]
+      ).first
+      log_reminder_history(reminder_id: reminder["id"], action_type: "snoozed", actor_user_id: user[:id], details: { snoozeMinutes: snooze_minutes })
+      JSON.generate(reminder: serialize_reminder_row(updated))
+    when "reschedule"
+      new_due_at = parse_timestamp(payload["dueAt"], "New reminder due date")
+      updated = db_exec(
+        "UPDATE reminders SET due_at = $1, next_run_at = $1, status = 'Scheduled', updated_at = NOW() WHERE id = $2 RETURNING *",
+        [new_due_at, reminder["id"]]
+      ).first
+      log_reminder_history(reminder_id: reminder["id"], action_type: "rescheduled", actor_user_id: user[:id], details: { dueAt: new_due_at })
+      JSON.generate(reminder: serialize_reminder_row(updated))
+    when "complete"
+      updated = db_exec(
+        "UPDATE reminders SET status = 'Completed', completed_at = NOW(), updated_at = NOW() WHERE id = $1 RETURNING *",
+        [reminder["id"]]
+      ).first
+      log_reminder_history(reminder_id: reminder["id"], action_type: "completed", actor_user_id: user[:id], details: {})
+      JSON.generate(reminder: serialize_reminder_row(updated))
+    when "cancel"
+      halt_json(403, error: "Only managers or admins can cancel reminders.") unless manager_or_admin?(user)
+      updated = db_exec(
+        "UPDATE reminders SET status = 'Cancelled', is_active = FALSE, updated_at = NOW() WHERE id = $1 RETURNING *",
+        [reminder["id"]]
+      ).first
+      log_reminder_history(reminder_id: reminder["id"], action_type: "cancelled", actor_user_id: user[:id], details: {})
+      JSON.generate(reminder: serialize_reminder_row(updated))
+    else
+      halt_json(400, error: "Unsupported reminder action.")
+    end
+  end
+
+  get "/api/reminders/:reminder_id/history" do
+    require_authentication!
+    rows = db_exec(
+      <<~SQL,
+        SELECT id, reminder_id, action_type, actor_user_id, details, created_at
+        FROM reminder_history_logs
+        WHERE reminder_id = $1
+        ORDER BY created_at DESC
+        LIMIT 200
+      SQL
+      [params[:reminder_id]]
+    ).map do |row|
+      {
+        id: row["id"],
+        reminderId: row["reminder_id"],
+        actionType: row["action_type"],
+        actorUserId: row["actor_user_id"],
+        details: parse_json_column(row["details"], {}),
+        createdAt: row["created_at"]
+      }
+    end
+    JSON.generate(history: rows)
+  end
+
+  get "/api/recurring-templates" do
+    require_manager_or_admin!
+    templates = db_exec(
+      <<~SQL
+        SELECT id, name, description, instructions, recurrence_type, custom_interval_days, urgency, assign_mode,
+               assigned_user_id, assigned_department, due_after_hours, starts_at, next_run_at, timezone, is_active,
+               last_generated_at, created_by, created_at, updated_at
+        FROM recurring_task_templates
+        ORDER BY next_run_at ASC, created_at DESC
+        LIMIT 300
+      SQL
+    ).map { |row| serialize_recurring_template_row(row) }
+    JSON.generate(templates: templates)
+  end
+
+  post "/api/recurring-templates" do
+    current = require_manager_or_admin!
+    payload = parse_json_body
+    name = sanitize_text(payload["name"], "Template name", required: true, max_length: 200)
+    description = sanitize_text(payload["description"], "Template description", required: false, max_length: 5000)
+    instructions = sanitize_text(payload["instructions"], "Template instructions", required: false, max_length: 5000)
+    recurrence_type = payload["recurrenceType"].to_s.strip
+    halt_json(400, error: "Recurrence type is invalid.") unless RECURRING_TEMPLATE_TYPES.include?(recurrence_type)
+    custom_interval_days = parse_positive_integer(payload["customIntervalDays"], "Custom interval days", min: 1, max: 3650, default: nil)
+    urgency = payload["urgency"].to_s.strip
+    urgency = "Medium" if urgency.empty?
+    halt_json(400, error: "Urgency is invalid.") unless REMINDER_URGENCY_LEVELS.include?(urgency)
+    assign_mode = payload["assignMode"].to_s.strip
+    assign_mode = "individual" if assign_mode.empty?
+    halt_json(400, error: "Assign mode is invalid.") unless RECURRING_ASSIGN_MODES.include?(assign_mode)
+    assigned_user_id = payload["assignedUserId"].to_s.strip
+    assigned_department = sanitize_text(payload["assignedDepartment"], "Assigned department", required: false, max_length: 120)
+    if assign_mode == "individual" && assigned_user_id.empty?
+      halt_json(400, error: "Assigned user is required for individual mode.")
+    end
+    if assign_mode == "department" && assigned_department.empty?
+      halt_json(400, error: "Assigned department is required for department mode.")
+    end
+    due_after_hours = parse_positive_integer(payload["dueAfterHours"], "Due after hours", min: 1, max: 10000, default: 24)
+    starts_at = parse_timestamp(payload["startsAt"], "Template start date", required: false) || Time.now.utc.iso8601
+    row = db_exec(
+      <<~SQL,
+        INSERT INTO recurring_task_templates (
+          id, name, description, instructions, recurrence_type, custom_interval_days, urgency, assign_mode,
+          assigned_user_id, assigned_department, due_after_hours, starts_at, next_run_at, timezone,
+          is_active, created_by, created_at, updated_at
+        )
+        VALUES (
+          gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7,
+          $8, $9, $10, $11, $11, $12, TRUE, $13, NOW(), NOW()
+        )
+        RETURNING id, name, description, instructions, recurrence_type, custom_interval_days, urgency, assign_mode,
+                  assigned_user_id, assigned_department, due_after_hours, starts_at, next_run_at, timezone, is_active,
+                  last_generated_at, created_by, created_at, updated_at
+      SQL
+      [
+        name, description, instructions, recurrence_type, custom_interval_days, urgency, assign_mode,
+        assigned_user_id.empty? ? nil : assigned_user_id, assigned_department.empty? ? nil : assigned_department,
+        due_after_hours, starts_at, scheduler_timezone, current[:user][:id]
+      ]
+    ).first
+    JSON.generate(template: serialize_recurring_template_row(row))
+  end
+
+  post "/api/recurring-templates/:template_id/run" do
+    current = require_manager_or_admin!
+    template = db_exec("SELECT id FROM recurring_task_templates WHERE id = $1 LIMIT 1", [params[:template_id]]).first
+    halt_json(404, error: "Template not found.") unless template
+    db_exec("UPDATE recurring_task_templates SET next_run_at = NOW(), updated_at = NOW() WHERE id = $1", [template["id"]])
+    generated = process_recurring_templates!(limit: 50, actor_user_id: current[:user][:id])
+    JSON.generate(success: true, generatedTasks: generated)
+  end
+
+  get "/api/weekly-reports" do
+    require_manager_or_admin!
+    reports = db_exec(
+      <<~SQL
+        SELECT id, report_week_start, report_week_end, report_status, generated_by, generated_at, summary,
+               pdf_url, whatsapp_summary_sent_at, email_dispatch_planned, created_at
+        FROM weekly_employee_reports
+        ORDER BY report_week_start DESC, created_at DESC
+        LIMIT 120
+      SQL
+    ).map { |row| serialize_weekly_report_row(row) }
+    JSON.generate(reports: reports)
+  end
+
+  post "/api/weekly-reports/generate" do
+    current = require_manager_or_admin!
+    payload = parse_json_body
+    week_start = if payload["weekStart"].to_s.strip.empty?
+      previous_week_window(Time.now.utc).first
+    else
+      Date.parse(payload["weekStart"].to_s)
+    end
+    week_end = if payload["weekEnd"].to_s.strip.empty?
+      week_start + 6
+    else
+      Date.parse(payload["weekEnd"].to_s)
+    end
+    report_id = generate_weekly_report!(week_start: week_start, week_end: week_end, actor_user_id: current[:user][:id])
+    report = db_exec(
+      "SELECT id, report_week_start, report_week_end, report_status, generated_by, generated_at, summary, pdf_url, whatsapp_summary_sent_at, email_dispatch_planned, created_at FROM weekly_employee_reports WHERE id = $1 LIMIT 1",
+      [report_id]
+    ).first
+    JSON.generate(report: serialize_weekly_report_row(report))
+  end
+
+  get "/api/weekly-reports/:report_id/pdf" do
+    require_manager_or_admin!
+    report = db_exec(
+      "SELECT id, report_week_start, report_week_end, summary FROM weekly_employee_reports WHERE id = $1 LIMIT 1",
+      [params[:report_id]]
+    ).first
+    halt_json(404, error: "Report not found.") unless report
+    summary = parse_json_column(report["summary"], {})
+    lines = []
+    (summary["employeeReports"] || summary[:employeeReports] || []).first(35).each do |row|
+      employee_name = row["employeeName"] || row[:employeeName] || row["employeeId"] || row[:employeeId]
+      grade = row["performanceGrade"] || row[:performanceGrade]
+      completion = row["completionPercentage"] || row[:completionPercentage] || 0
+      lines << "#{employee_name} | Grade: #{grade} | Completion: #{completion}%"
+    end
+    pdf_bytes = create_simple_pdf_bytes(
+      title: "Weekly Employee Report (#{report['report_week_start']} to #{report['report_week_end']})",
+      lines: lines
+    )
+    content_type "application/pdf"
+    attachment "weekly-report-#{report['report_week_start']}.pdf"
+    body pdf_bytes
+  end
+
+  post "/api/automation/run" do
+    current = require_manager_or_admin!
+    outcome = {
+      remindersProcessed: process_reminders!(actor_user_id: current[:user][:id]),
+      recurringTasksGenerated: process_recurring_templates!(actor_user_id: current[:user][:id]),
+      weeklyReportId: process_weekly_reports!(actor_user_id: current[:user][:id])
+    }
+    JSON.generate(outcome)
   end
 
   not_found do

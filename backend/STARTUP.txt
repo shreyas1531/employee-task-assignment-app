@@ -125,8 +125,13 @@ Operational notes
 WhatsApp / performance / inventory extension notes
 - Run migrations after pulling latest code: `bundle exec ruby scripts/setup_db.rb`.
 - Set Twilio variables: `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_WHATSAPP_FROM`, and optional `WHATSAPP_MAX_RETRIES`.
+- Configure automation defaults for reminder/recurring/reporting:
+  - `SCHEDULER_TIMEZONE=Asia/Kolkata`
+  - `AUTOMATION_THROTTLE_SECONDS=120`
+  - `WEEKLY_REPORT_RUN_HOUR_IST=9`
 - Admin module now includes:
   - WhatsApp log processing (`/api/whatsapp/process`, `/api/whatsapp/logs`, `/api/whatsapp/test-message`)
   - Announcements (`/api/admin/announcements`)
   - Performance controls (`/api/performance/overview`, `/api/admin/performance/weights`, `/api/admin/performance/reports`, `/api/admin/performance/reset`)
+  - Reminder/recurring/reporting controls (`/api/reminders`, `/api/recurring-templates`, `/api/weekly-reports`, `/api/automation/run`)
 - Product grid supports extended product attributes and manual stock adjustment endpoint `/api/products/:product_id/stock-movements`.
